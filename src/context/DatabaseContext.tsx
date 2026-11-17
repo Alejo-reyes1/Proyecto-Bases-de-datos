@@ -148,6 +148,13 @@ export const DatabaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     refreshFromOracle();
   }, [refreshFromOracle]);
 
+  // Sin conexión: reintenta cada 10 s para pasar a Oracle apenas arranque el backend.
+  useEffect(() => {
+    if (connectionMode !== 'local-engine') return;
+    const t = setInterval(refreshFromOracle, 10000);
+    return () => clearInterval(t);
+  }, [connectionMode, refreshFromOracle]);
+
   // Solo se persiste en el navegador el trabajo hecho sin conexión.
   useEffect(() => {
     if (connectionMode === 'local-engine') safeSet(STORAGE_KEY, JSON.stringify(data));
@@ -174,7 +181,10 @@ export const DatabaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         return fail((err as Error).message);
       }
     }
-    return local();
+    const r = local();
+    return r.success
+      ? { ...r, message: `${r.message} · MODO LOCAL: guardado solo en este navegador, NO en Oracle (inicie npm run server)` }
+      : r;
   };
 
   const nextId = <T,>(arr: T[], key: keyof T) =>
