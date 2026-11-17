@@ -52,44 +52,28 @@ const PRESET_USERS: {
 ];
 
 export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
-  const { login } = useDatabase();
+  const { autenticar } = useDatabase();
 
-  const [usuario, setUsuario] = useState('admin');
-  const [password, setPassword] = useState('admin123');
+  const [usuario, setUsuario] = useState('');
+  const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const found = PRESET_USERS.find(
-      u => u.usuario.toLowerCase() === usuario.toLowerCase() && u.clave === password
-    );
-    if (found) {
-      login({
-        usuario: found.usuario,
-        nombre: found.nombre,
-        rol: found.rol,
-        restauranteId: found.restauranteId,
-        restauranteNombre: found.restauranteNombre
-      });
+  const tryLogin = async (u: string, p: string) => {
+    const r = await autenticar(u, p);
+    if (r.success) {
       setError(null);
       onClose();
-    } else {
-      setError('Credenciales inválidas. Compruebe su usuario y contraseña en Oracle DB.');
-    }
+    } else setError(r.message);
   };
 
-  const handleSelectPreset = (preset: typeof PRESET_USERS[0]) => {
-    login({
-      usuario: preset.usuario,
-      nombre: preset.nombre,
-      rol: preset.rol,
-      restauranteId: preset.restauranteId,
-      restauranteNombre: preset.restauranteNombre
-    });
-    onClose();
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    tryLogin(usuario, password);
   };
+
+  const handleSelectPreset = (preset: typeof PRESET_USERS[0]) => tryLogin(preset.usuario, preset.clave);
 
   return (
     <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">

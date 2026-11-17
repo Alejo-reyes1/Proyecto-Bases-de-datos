@@ -64,37 +64,31 @@ export const CrudClientes: React.FC = () => {
     setIsModalOpen(true);
   };
 
-  const handleDelete = (doc: string) => {
+  const handleDelete = async (doc: string) => {
     if (window.confirm(`¿Desea eliminar al cliente con identificación ${doc}?`)) {
-      const result = deleteCliente(doc);
-      setFeedbackMessage({
-        text: result.message,
-        type: result.success ? 'success' : 'error'
-      });
-      setTimeout(() => setFeedbackMessage(null), 4000);
+      const result = await deleteCliente(doc);
+      setFeedbackMessage({ text: result.message, type: result.success ? 'success' : 'error' });
+      setTimeout(() => setFeedbackMessage(null), 5000);
     }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.numeroDocumento || !formData.Nombre || !formData.apellido || !formData.email) {
       alert('Por favor complete todos los campos obligatorios');
       return;
     }
 
-    if (editingCliente) {
-      updateCliente(editingCliente.numeroDocumento, formData);
-      setFeedbackMessage({ text: 'Turista/Cliente actualizado exitosamente en Oracle DB.', type: 'success' });
-    } else {
-      if (clientes.some(c => c.numeroDocumento === formData.numeroDocumento)) {
-        alert('Ya existe un cliente con este número de documento (Clave Primaria Duplicada).');
-        return;
-      }
-      addCliente(formData);
-      setFeedbackMessage({ text: 'Turista/Cliente registrado exitosamente en Oracle DB.', type: 'success' });
+    if (!editingCliente && clientes.some(c => c.numeroDocumento === formData.numeroDocumento)) {
+      alert('Ya existe un cliente con este número de documento (Clave Primaria Duplicada).');
+      return;
     }
-    setIsModalOpen(false);
-    setTimeout(() => setFeedbackMessage(null), 4000);
+    const result = editingCliente
+      ? await updateCliente(editingCliente.numeroDocumento, formData)
+      : await addCliente(formData);
+    if (result.success) setIsModalOpen(false);
+    setFeedbackMessage({ text: result.message, type: result.success ? 'success' : 'error' });
+    setTimeout(() => setFeedbackMessage(null), 5000);
   };
 
   return (

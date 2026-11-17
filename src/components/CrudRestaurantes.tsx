@@ -71,33 +71,27 @@ export const CrudRestaurantes: React.FC = () => {
     setIsModalOpen(true);
   };
 
-  const handleDelete = (id: number) => {
+  const handleDelete = async (id: number) => {
     if (window.confirm('¿Está seguro de eliminar este restaurante? Se verificará la integridad referencial.')) {
-      const result = deleteRestaurante(id);
-      setFeedbackMessage({
-        text: result.message,
-        type: result.success ? 'success' : 'error'
-      });
-      setTimeout(() => setFeedbackMessage(null), 4000);
+      const result = await deleteRestaurante(id);
+      setFeedbackMessage({ text: result.message, type: result.success ? 'success' : 'error' });
+      setTimeout(() => setFeedbackMessage(null), 5000);
     }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.nombre || !formData.nit || !formData.direccion) {
       alert('Por favor complete todos los campos obligatorios');
       return;
     }
 
-    if (editingRestaurante) {
-      updateRestaurante(editingRestaurante.idRestaurante, formData);
-      setFeedbackMessage({ text: 'Restaurante actualizado con éxito en Oracle DB.', type: 'success' });
-    } else {
-      addRestaurante(formData);
-      setFeedbackMessage({ text: 'Nuevo restaurante registrado exitosamente en Oracle DB.', type: 'success' });
-    }
-    setIsModalOpen(false);
-    setTimeout(() => setFeedbackMessage(null), 4000);
+    const result = editingRestaurante
+      ? await updateRestaurante(editingRestaurante.idRestaurante, formData)
+      : await addRestaurante(formData);
+    if (result.success) setIsModalOpen(false);
+    setFeedbackMessage({ text: result.message, type: result.success ? 'success' : 'error' });
+    setTimeout(() => setFeedbackMessage(null), 5000);
   };
 
   return (

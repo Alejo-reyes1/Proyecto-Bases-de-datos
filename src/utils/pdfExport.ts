@@ -1,13 +1,14 @@
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { ReportDefinition, ReportSummaryItem } from '../services/reportService';
-import { Orden, Cliente, Restaurante, ItemMenu, ExperienciaTuristica } from '../types';
+import { Orden, Cliente, Restaurante, ItemMenu, ExperienciaTuristica, Pago } from '../types';
 
 export const exportReportToPdf = (
   report: ReportDefinition,
   data: any[],
   summary: ReportSummaryItem[],
-  userName: string = 'Administrador'
+  userName: string = 'Administrador',
+  meta: string = ''
 ) => {
   const doc = new jsPDF({
     orientation: 'portrait',
@@ -30,7 +31,7 @@ export const exportReportToPdf = (
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(203, 213, 225); // slate-300
   doc.text('Proyecto Final: Bases de Datos I | Sistema Sabor & Ruta - Gastronomía y Turismo', 14, 18);
-  doc.text(`Generado: ${new Date().toLocaleString('es-CO')} | Usuario: ${userName}`, 14, 23);
+  doc.text(`Generado: ${new Date().toLocaleString('es-CO')} | Usuario: ${userName}${meta ? ' | ' + meta : ''}`, 14, 23);
 
   // Categoría & Título del Reporte
   let currentY = 36;
@@ -78,8 +79,8 @@ export const exportReportToPdf = (
   const tableRows = data.map(row => {
     return report.columns.map(col => {
       const val = row[col.key];
-      if (col.isCurrency && typeof val === 'number') {
-        return `$${val.toLocaleString('es-CO')} COP`;
+      if (col.isCurrency && val !== null && val !== undefined && !isNaN(Number(val))) {
+        return `$${Number(val).toLocaleString('es-CO')} COP`;
       }
       return val !== undefined && val !== null ? String(val) : '-';
     });
@@ -147,7 +148,9 @@ export const exportFacturaToPdf = (
   cliente: Cliente | undefined,
   restaurante: Restaurante | undefined,
   itemsMenu: ItemMenu[],
-  experiencias: ExperienciaTuristica[]
+  experiencias: ExperienciaTuristica[],
+  pago?: Pago,
+  metodos?: string
 ) => {
   const doc = new jsPDF({
     orientation: 'portrait',
@@ -156,6 +159,7 @@ export const exportFacturaToPdf = (
   });
 
   const pageWidth = doc.internal.pageSize.getWidth();
+  const propina = pago ? pago.propina : Math.round(orden.total * 0.1);
 
   // Cabecera Comercial
   doc.setFillColor(15, 23, 42);
@@ -175,11 +179,11 @@ export const exportFacturaToPdf = (
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(14);
   doc.setTextColor(255, 255, 255);
-  doc.text(`FACTURA Nº FAC-00${orden.idOrden}`, pageWidth - 14, 14, { align: 'right' });
+  doc.text(`FACTURA Nº FAC-${String(orden.idOrden).padStart(5, '0')}`, pageWidth - 14, 14, { align: 'right' });
   doc.setFontSize(9);
   doc.setFont('helvetica', 'normal');
   doc.text(`Fecha: ${orden.fecha}`, pageWidth - 14, 20, { align: 'right' });
-  doc.text(`Estado: PAGADA (OFICIAL)`, pageWidth - 14, 25, { align: 'right' });
+  doc.text(pago ? `PAGADA - Pago #${pago.idPago} (${metodos || pago.monedaPago})` : 'PENDIENTE DE PAGO', pageWidth - 14, 25, { align: 'right' });
 
   // Cuadro Restaurante
   let y = 42;
@@ -193,9 +197,9 @@ export const exportFacturaToPdf = (
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(8.5);
   doc.setTextColor(71, 85, 105);
-  doc.text(`Razón Social: ${restaurante?.nombre || 'El Fogón Cafetero'}`, 18, y + 12);
-  doc.text(`NIT: ${restaurante?.nit || '900123451-1'}`, 18, y + 17);
-  doc.text(`Dirección: ${restaurante?.direccion || 'Calle Real # 6-15'}`, 18, y + 22);
+  doc.text(`Razón Social: ${restaurante?.nombre || ''}`, 18, y + 12);
+  doc.text(`NIT: ${restaurante?.nit || ''}`, 18, y + 17);
+  doc.text(`Dirección: ${restaurante?.direccion || ''}`, 18, y + 22);
 
   // Cuadro Turista / Cliente
   const xRight = 14 + (pageWidth - 32) / 2 + 4;
@@ -274,7 +278,7 @@ export const exportFacturaToPdf = (
   const totalBoxWidth = 85;
   const totalBoxX = pageWidth - 14 - totalBoxWidth;
   doc.setFillColor(241, 245, 249);
-  doc.roundedRect(totalBoxX, finalY, totalBoxWidth, 34, 2, 2, 'F');
+  doc.roundedRect(totalBoxX, finalY, totalBoxWidth, 41, 2, 2, 'F');
 
   doc.setFontSize(9);
   doc.setFont('helvetica', 'normal');
@@ -285,21 +289,24 @@ export const exportFacturaToPdf = (
   doc.text('Impoconsumo (8%):', totalBoxX + 4, finalY + 14);
   doc.text(`$${Math.round(orden.total - (orden.total / 1.08)).toLocaleString('es-CO')} COP`, totalBoxX + totalBoxWidth - 4, finalY + 14, { align: 'right' });
 
-  doc.text('Propina Voluntaria (10%):', totalBoxX + 4, finalY + 21);
-  doc.text(`$${Math.round(orden.total * 0.1).toLocaleString('es-CO')} COP`, totalBoxX + totalBoxWidth - 4, finalY + 21, { align: 'right' });
+  doc.text('Total orden:', totalBoxX + 4, finalY + 21);
+  doc.text(`$${orden.total.toLocaleString('es-CO')} COP`, totalBoxX + totalBoxWidth - 4, finalY + 21, { align: 'right' });
+
+  doc.text(pago ? 'Propina:' : 'Propina sugerida (10%):', totalBoxX + 4, finalY + 28);
+  doc.text(`$${propina.toLocaleString('es-CO')} COP`, totalBoxX + totalBoxWidth - 4, finalY + 28, { align: 'right' });
 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(11);
   doc.setTextColor(180, 83, 9);
-  doc.text('TOTAL FACTURADO:', totalBoxX + 4, finalY + 29);
-  doc.text(`$${orden.total.toLocaleString('es-CO')} COP`, totalBoxX + totalBoxWidth - 4, finalY + 29, { align: 'right' });
+  doc.text(pago ? 'TOTAL PAGADO:' : 'TOTAL A PAGAR:', totalBoxX + 4, finalY + 36);
+  doc.text(`$${(orden.total + propina).toLocaleString('es-CO')} COP`, totalBoxX + totalBoxWidth - 4, finalY + 36, { align: 'right' });
 
   // Pie legal
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(7.5);
   doc.setTextColor(148, 163, 184);
-  doc.text('Documento equivalente de factura expedido bajo los lineamientos académicos de Bases de Datos I.', 14, finalY + 45);
-  doc.text('Oracle Autonomous Database Cloud (OCI) - Instancia ProyectoRestaurante | Grupo SINFOCI', 14, finalY + 50);
+  doc.text('Documento equivalente de factura expedido bajo los lineamientos académicos de Bases de Datos I.', 14, finalY + 52);
+  doc.text('Oracle Autonomous Database Cloud (OCI) - Instancia ProyectoRestaurante', 14, finalY + 57);
 
   doc.save(`Factura_Orden_${orden.idOrden}_SaborRuta.pdf`);
 };

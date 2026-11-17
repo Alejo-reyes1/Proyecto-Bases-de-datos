@@ -117,6 +117,8 @@ export interface Orden {
   detallesMenu?: DetalleOrden[];
   detallesExperiencia?: DetalleExperienciaOrden[];
   mesaId?: number;
+  meseroId?: string;
+  repartidorId?: string;
   direccionEntrega?: string;
   costoDomicilio?: number;
   restauranteId?: number;
@@ -137,6 +139,7 @@ export interface Reserva {
   Restaurante_idRestaurante: number;
   Estado_idEstado: number;
   peticionesEspeciales?: string[];
+  peticionesIds?: number[];
   experienciaTuristicaId?: number;
 }
 
@@ -148,6 +151,7 @@ export interface Pago {
   fechaPago: string;
   Orden_idOrden: number;
   metodoPagoId?: number;
+  metodosPagoIds?: number[];
 }
 
 export interface Resena {
@@ -166,5 +170,70 @@ export interface UserSession {
   rol: 'Administrador' | 'Gerente' | 'Chef' | 'Mesero' | 'Turista';
   restauranteId?: number; // Si es Gerente, Chef o Mesero, pertenece a una sede específica
   restauranteNombre?: string;
+  clienteDocumento?: string; // Si es Turista, documento del Cliente asociado
   token?: string;
+}
+
+export interface Idioma {
+  idIdioma: number;
+  nombreIdioma: string;
+}
+
+export interface MetodoPago {
+  idMetodoPago: number;
+  nombre: string;
+}
+
+export interface Mesero {
+  Personal_numeroDocumento: string;
+  turno: string;
+}
+
+export interface Chef {
+  Personal_numeroDocumento: string;
+  especialidad: string;
+}
+
+export interface Administrador {
+  Personal_numeroDocumento: string;
+  aniosExperiencia: number;
+}
+
+export interface Repartidor {
+  Personal_numeroDocumento: string;
+  medioTransporte: string;
+}
+
+export interface MeseroIdioma {
+  Mesero_Personal_numeroDocumento: string;
+  Idioma_idIdioma: number;
+}
+
+/** Estructura completa que entrega /api/dataset (Oracle) o seedData.ts (DML local). */
+export interface Dataset {
+  paises: Pais[];
+  departamentos: Departamento[];
+  ciudades: Ciudad[];
+  tiposDocumento: TipoDocumento[];
+  estados: Estado[];
+  idiomas: Idioma[];
+  metodosPago: MetodoPago[];
+  peticionesEspeciales: PeticionEspecial[];
+  restaurantes: Restaurante[];
+  clientes: Cliente[];
+  experiencias: ExperienciaTuristica[];
+  cartasMenu: CartaMenu[];
+  itemsMenu: ItemMenu[];
+  mesas: Mesa[];
+  personal: Personal[];
+  meseros: Mesero[];
+  chefs: Chef[];
+  administradores: Administrador[];
+  repartidores: Repartidor[];
+  meseroIdiomas: MeseroIdioma[];
+  ordenes: Orden[];
+  reservas: Reserva[];
+  resenas: Resena[];
+  pagos: Pago[];
+  conteos: Record<string, number>;
 }

@@ -64,30 +64,27 @@ export const CrudExperiencias: React.FC = () => {
     setIsModalOpen(true);
   };
 
-  const handleDelete = (id: number) => {
+  const handleDelete = async (id: number) => {
     if (window.confirm('¿Está seguro de eliminar esta experiencia turística?')) {
-      const result = deleteExperiencia(id);
-      setFeedbackMessage({ text: result.message, type: 'success' });
-      setTimeout(() => setFeedbackMessage(null), 4000);
+      const result = await deleteExperiencia(id);
+      setFeedbackMessage({ text: result.message, type: result.success ? 'success' : 'error' });
+      setTimeout(() => setFeedbackMessage(null), 5000);
     }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.nombreExperiencia || !formData.descripcion) {
       alert('Por favor complete los campos requeridos');
       return;
     }
 
-    if (editingExp) {
-      updateExperiencia(editingExp.idExperiencia, formData);
-      setFeedbackMessage({ text: 'Experiencia turística actualizada correctamente en Oracle DB.', type: 'success' });
-    } else {
-      addExperiencia(formData);
-      setFeedbackMessage({ text: 'Nueva experiencia turística creada exitosamente en Oracle DB.', type: 'success' });
-    }
-    setIsModalOpen(false);
-    setTimeout(() => setFeedbackMessage(null), 4000);
+    const result = editingExp
+      ? await updateExperiencia(editingExp.idExperiencia, formData)
+      : await addExperiencia(formData);
+    if (result.success) setIsModalOpen(false);
+    setFeedbackMessage({ text: result.message, type: result.success ? 'success' : 'error' });
+    setTimeout(() => setFeedbackMessage(null), 5000);
   };
 
   return (

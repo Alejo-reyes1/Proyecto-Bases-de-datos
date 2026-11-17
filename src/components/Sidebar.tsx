@@ -24,6 +24,9 @@ export type ActiveTab =
   | 'factura'
   | 'modelo30';
 
+// El turista solo accede a su flujo de reservas y a sus facturas/pagos.
+export const TURISTA_TABS: ActiveTab[] = ['reserva_turista', 'factura'];
+
 interface SidebarProps {
   activeTab: ActiveTab;
   setActiveTab: (tab: ActiveTab) => void;
@@ -34,7 +37,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
 
   const menuItems = [
     { id: 'dashboard', label: 'Panel Ejecutivo', icon: LayoutDashboard, badge: null },
-    { id: 'reserva_turista', label: 'Hacer una Reserva', icon: CalendarCheck, badge: 'Flujo Turista' },
+    { id: 'reserva_turista', label: 'Hacer una Reserva', icon: CalendarCheck, badge: 'Turista' },
     {
       type: 'section',
       label: 'Módulos CRUD Core (4 Tablas)',
@@ -47,8 +50,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
       type: 'section',
       label: 'Reportes & Documentos',
     },
-    { id: 'reportes', label: 'Centro de Reportes', icon: FileBarChart2, badge: '11 Consultas' },
-    { id: 'factura', label: 'Plantilla de Factura', icon: Receipt, badge: 'Plantilla' },
+    { id: 'reportes', label: 'Centro de Reportes', icon: FileBarChart2, badge: '12 Reportes' },
+    { id: 'factura', label: 'Factura y Pago', icon: Receipt, badge: 'Plantilla' },
     {
       type: 'section',
       label: 'Arquitectura de Datos',
@@ -70,7 +73,10 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
           </div>
         )}
 
-        {menuItems.map((item, index) => {
+        {menuItems
+          .filter(item => user?.rol !== 'Turista' || item.type === 'section' ? true : TURISTA_TABS.includes(item.id as ActiveTab))
+          .filter((item, i, arr) => user?.rol !== 'Turista' || item.type !== 'section' || (arr[i + 1] && arr[i + 1].type !== 'section'))
+          .map((item, index) => {
           if (item.type === 'section') {
             return (
               <div key={index} className="pt-4 pb-1 px-3">

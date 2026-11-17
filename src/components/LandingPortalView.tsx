@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useDatabase } from '../context/DatabaseContext';
 import { UserSession } from '../types';
+import { RegistroCuentaForm } from './RegistroCuentaForm';
 import {
   UtensilsCrossed,
   Shield,
@@ -21,11 +22,14 @@ interface LandingPortalViewProps {
 }
 
 export const LandingPortalView: React.FC<LandingPortalViewProps> = ({ onStartBookingAsGuest }) => {
-  const { login, restaurantes, experiencias } = useDatabase();
+  const { autenticar, connectionMode, health } = useDatabase();
 
-  const [username, setUsername] = useState('admin');
-  const [password, setPassword] = useState('admin123');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [okMessage, setOkMessage] = useState<string | null>(null);
+  const [tab, setTab] = useState<'login' | 'registro'>('login');
+  const [busy, setBusy] = useState(false);
 
   // Pre-configured test roles matching database records
   const PROFILES: {
@@ -45,7 +49,7 @@ export const LandingPortalView: React.FC<LandingPortalViewProps> = ({ onStartBoo
       id: 'admin',
       username: 'admin',
       pass: 'admin123',
-      name: 'Alejandro (Arquitecto de BD & Admin)',
+      name: 'Administrador General',
       role: 'Administrador',
       badge: 'Acceso Total 30 Tablas',
       badgeColor: 'bg-purple-500/20 text-purple-300 border-purple-500/30',
@@ -56,7 +60,7 @@ export const LandingPortalView: React.FC<LandingPortalViewProps> = ({ onStartBoo
       id: 'gerente-salento',
       username: 'gerente.salento',
       pass: 'salento123',
-      name: 'Luis Echeverri (Gerente)',
+      name: 'Carlos Ramírez (Gerente)',
       role: 'Gerente',
       restaurantId: 1,
       restaurantName: 'El Fogón Cafetero (Salento, Quindío)',
@@ -69,7 +73,7 @@ export const LandingPortalView: React.FC<LandingPortalViewProps> = ({ onStartBoo
       id: 'gerente-cartagena',
       username: 'gerente.cartagena',
       pass: 'cartagena123',
-      name: 'Beatriz Herrera (Gerente)',
+      name: 'Mariana Pérez (Gerente)',
       role: 'Gerente',
       restaurantId: 2,
       restaurantName: 'Mar y Murallas (Cartagena de Indias)',
@@ -82,7 +86,7 @@ export const LandingPortalView: React.FC<LandingPortalViewProps> = ({ onStartBoo
       id: 'turista',
       username: 'turista.carlos',
       pass: 'turista123',
-      name: 'Carlos Gómez (Turista / Viajero)',
+      name: 'Carlos Mendoza (Turista)',
       role: 'Turista',
       badge: 'Comensal & Turista',
       badgeColor: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30',
@@ -91,33 +95,24 @@ export const LandingPortalView: React.FC<LandingPortalViewProps> = ({ onStartBoo
     }
   ];
 
+  // Toda autenticación pasa por el servidor (POST /api/login), también los perfiles rápidos.
+  const doLogin = async (u: string, p: string) => {
+    setErrorMessage(null);
+    setBusy(true);
+    const r = await autenticar(u, p);
+    setBusy(false);
+    if (!r.success) setErrorMessage(r.message);
+  };
+
   const handleManualLogin = (e: React.FormEvent) => {
     e.preventDefault();
-    const matched = PROFILES.find(
-      p => p.username.toLowerCase() === username.toLowerCase() && p.pass === password
-    );
-
-    if (matched) {
-      login({
-        usuario: matched.username,
-        nombre: matched.name,
-        rol: matched.role,
-        restauranteId: matched.restaurantId,
-        restauranteNombre: matched.restaurantName
-      });
-    } else {
-      setErrorMessage('Credenciales no válidas. Pruebe uno de los perfiles rápidos del sistema.');
-    }
+    doLogin(username, password);
   };
 
   const handleQuickLogin = (profile: typeof PROFILES[0]) => {
-    login({
-      usuario: profile.username,
-      nombre: profile.name,
-      rol: profile.role,
-      restauranteId: profile.restaurantId,
-      restauranteNombre: profile.restaurantName
-    });
+    setUsername(profile.username);
+    setPassword(profile.pass);
+    doLogin(profile.username, profile.pass);
   };
 
   return (
@@ -142,8 +137,16 @@ export const LandingPortalView: React.FC<LandingPortalViewProps> = ({ onStartBoo
 
           <div className="hidden sm:flex items-center gap-3">
             <span className="text-xs text-slate-400 flex items-center gap-1.5 font-medium">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-              Oracle Cloud Autonomous DB (sa-bogota-1)
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  connectionMode === 'oracle-cloud' ? 'bg-emerald-400 animate-pulse' : connectionMode === 'checking' ? 'bg-sky-400 animate-pulse' : 'bg-amber-400'
+                }`}
+              ></span>
+              {connectionMode === 'oracle-cloud'
+                ? `Conectado a Oracle Autonomous DB (${health?.service})`
+                : connectionMode === 'checking'
+                ? 'Verificando conexión con Oracle…'
+                : 'Modo local (sin conexión a Oracle)'}
             </span>
           </div>
         </div>
@@ -173,7 +176,7 @@ export const LandingPortalView: React.FC<LandingPortalViewProps> = ({ onStartBoo
               <p className="text-[11px] text-slate-400 font-medium mt-0.5">Tablas Relacionales</p>
             </div>
             <div className="p-3.5 rounded-2xl bg-slate-900 border border-slate-800">
-              <p className="text-2xl font-black text-blue-400 font-mono">11</p>
+              <p className="text-2xl font-black text-blue-400 font-mono">12</p>
               <p className="text-[11px] text-slate-400 font-medium mt-0.5">Reportes Oficiales</p>
             </div>
             <div className="p-3.5 rounded-2xl bg-slate-900 border border-slate-800">
@@ -186,7 +189,7 @@ export const LandingPortalView: React.FC<LandingPortalViewProps> = ({ onStartBoo
           <div className="p-4 rounded-2xl bg-gradient-to-r from-emerald-500/10 to-transparent border border-emerald-500/20 flex items-center justify-between gap-4">
             <div>
               <p className="text-xs font-bold text-white">¿Deseas probar el flujo como Turista?</p>
-              <p className="text-[11px] text-slate-400">Reserva mesas y tours sin escribir contraseña</p>
+              <p className="text-[11px] text-slate-400">Ingresa con la cuenta de demostración turista.carlos</p>
             </div>
             <button
               onClick={() => handleQuickLogin(PROFILES[3])}
@@ -212,11 +215,41 @@ export const LandingPortalView: React.FC<LandingPortalViewProps> = ({ onStartBoo
             </div>
           </div>
 
+          <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-slate-950 border border-slate-800 mb-4">
+            {(['login', 'registro'] as const).map(t => (
+              <button
+                key={t}
+                onClick={() => {
+                  setTab(t);
+                  setErrorMessage(null);
+                }}
+                className={`py-1.5 rounded-lg text-xs font-bold ${tab === t ? 'bg-amber-500 text-slate-950' : 'text-slate-400 hover:text-white'}`}
+              >
+                {t === 'login' ? 'Iniciar sesión' : 'Crear cuenta de turista'}
+              </button>
+            ))}
+          </div>
+
           {errorMessage && (
             <div className="mb-4 p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs">
               {errorMessage}
             </div>
           )}
+          {okMessage && (
+            <div className="mb-4 p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-xs">{okMessage}</div>
+          )}
+
+          {tab === 'registro' ? (
+            <RegistroCuentaForm
+              onDone={(u, msg) => {
+                setTab('login');
+                setUsername(u);
+                setPassword('');
+                setOkMessage(`${msg}. Ya puedes iniciar sesión con «${u}».`);
+              }}
+            />
+          ) : (
+          <>
 
           {/* Quick 1-Click Role Profiles (Prepared for University Defense) */}
           <div className="space-y-2 mb-6">
@@ -289,12 +322,15 @@ export const LandingPortalView: React.FC<LandingPortalViewProps> = ({ onStartBoo
 
             <button
               type="submit"
-              className="w-full py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs shadow-lg shadow-amber-500/20 transition-all flex items-center justify-center gap-1.5 mt-2"
+              disabled={busy}
+              className="w-full py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 font-bold text-xs shadow-lg shadow-amber-500/20 transition-all flex items-center justify-center gap-1.5 mt-2"
             >
-              <span>Acceder al Sistema</span>
+              <span>{busy ? 'Validando credenciales…' : 'Acceder al sistema'}</span>
               <ArrowRight className="w-4 h-4" />
             </button>
           </form>
+          </>
+          )}
         </div>
       </main>
 

@@ -33,26 +33,15 @@ const COLORS = ['#f59e0b', '#3b82f6', '#10b981', '#ec4899', '#8b5cf6', '#06b6d4'
 export const DashboardView: React.FC<DashboardViewProps> = ({ setActiveTab }) => {
   const { restaurantes, clientes, experiencias, ordenes, paises } = useDatabase();
 
-  const totalFacturado = ordenes.reduce((acc, curr) => acc + curr.total, 0);
+  // Ventas reales por sede (salón y domicilio), excluyendo órdenes canceladas (Estado 7)
+  const activas = ordenes.filter(o => o.Estado_idEstado !== 7);
+  const totalFacturado = activas.reduce((acc, curr) => acc + curr.total, 0);
   const turistasExtranjeros = clientes.filter(c => c.paisOrigen !== 'CO').length;
 
-  // Chart 1 data: Sales per restaurant
-  const salesByRestaurante = restaurantes.map(r => {
-    let total = 0;
-    ordenes.forEach(o => {
-      const isLinked = (r.idRestaurante === 1 && [1, 2, 7].includes(o.idOrden)) ||
-                       (r.idRestaurante === 2 && [2, 8].includes(o.idOrden)) ||
-                       (r.idRestaurante === 3 && [3, 9].includes(o.idOrden)) ||
-                       (r.idRestaurante === 4 && [4, 10].includes(o.idOrden)) ||
-                       (r.idRestaurante === 5 && [5, 11].includes(o.idOrden)) ||
-                       (r.idRestaurante === 6 && [6, 12].includes(o.idOrden));
-      if (isLinked) total += o.total;
-    });
-    return {
-      name: r.nombre.length > 15 ? r.nombre.slice(0, 14) + '...' : r.nombre,
-      ventas: total
-    };
-  });
+  const salesByRestaurante = restaurantes.map(r => ({
+    name: r.nombre.length > 15 ? r.nombre.slice(0, 14) + '...' : r.nombre,
+    ventas: activas.filter(o => o.restauranteId === r.idRestaurante).reduce((s, o) => s + o.total, 0),
+  }));
 
   // Chart 2 data: Tourists by country
   const countryCounts: Record<string, number> = {};

@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { DatabaseProvider, useDatabase } from './context/DatabaseContext';
 import { Navbar } from './components/Navbar';
-import { Sidebar, ActiveTab } from './components/Sidebar';
+import { Sidebar, ActiveTab, TURISTA_TABS } from './components/Sidebar';
 import { LandingPortalView } from './components/LandingPortalView';
 import { DashboardView } from './components/DashboardView';
 import { CrudRestaurantes } from './components/CrudRestaurantes';
@@ -18,6 +18,11 @@ export const AppContent: React.FC = () => {
   const { user } = useDatabase();
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
   const [isLoginOpen, setIsLoginOpen] = useState(false);
+
+  // El turista entra directo a reservas y no puede abrir módulos administrativos.
+  useEffect(() => {
+    if (user?.rol === 'Turista' && !TURISTA_TABS.includes(activeTab)) setActiveTab('reserva_turista');
+  }, [user, activeTab]);
 
   // GATED WELCOME PORTAL: If user is not logged in, show mandatory Landing Portal!
   if (!user) {

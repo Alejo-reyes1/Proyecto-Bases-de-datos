@@ -1,6 +1,7 @@
 import React from 'react';
 import { useDatabase } from '../context/DatabaseContext';
-import { Database, Shield, RotateCcw, User, LogOut, Building } from 'lucide-react';
+import { Database, Shield, RotateCcw, User, LogOut, Building, RefreshCw } from 'lucide-react';
+import { NotificacionesBell } from './NotificacionesBell';
 
 interface NavbarProps {
   onOpenLogin: () => void;
@@ -13,14 +14,21 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenLogin }) => {
     resetDatabase,
     restaurantes,
     selectedRestauranteId,
-    setSelectedRestauranteId
+    setSelectedRestauranteId,
+    connectionMode,
+    health,
+    lastSync,
+    refreshFromOracle
   } = useDatabase();
 
   const handleReset = () => {
-    if (window.confirm('¿Deseas restablecer todas las tablas a los datos originales de Oracle (DML de prueba)?')) {
-      resetDatabase();
-    }
+    const msg =
+      connectionMode === 'oracle-cloud'
+        ? '¿Recargar todas las tablas desde Oracle Cloud?'
+        : '¿Restablecer los datos locales a los INSERT originales del DML de prueba?';
+    if (window.confirm(msg)) resetDatabase();
   };
+  const online = connectionMode === 'oracle-cloud';
 
   return (
     <header className="h-16 bg-slate-900/90 backdrop-blur border-b border-slate-800 px-6 flex items-center justify-between sticky top-0 z-40">
@@ -66,14 +74,29 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenLogin }) => {
         )}
 
         {/* Oracle Cloud Status Badge */}
-        <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-400">
+        <button
+          onClick={() => refreshFromOracle()}
+          title={
+            online
+              ? `BD: ${health?.database} · usuario ${health?.user} · ${health?.tables} tablas · SYSDATE ${health?.sysdate} · sincronizado ${lastSync}`
+              : `Sin conexión a Oracle: ${health?.message || 'verificando…'} — clic para reintentar`
+          }
+          className={`hidden md:flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs ${
+            online ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-amber-500/10 border-amber-500/20 text-amber-300'
+          }`}
+        >
           <span className="relative flex h-2 w-2">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+            {online && <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>}
+            <span className={`relative inline-flex rounded-full h-2 w-2 ${online ? 'bg-emerald-500' : 'bg-amber-400'}`}></span>
           </span>
           <Database className="w-3.5 h-3.5" />
-          <span className="font-medium">Oracle Autonomous DB (OCI)</span>
-        </div>
+          <span className="font-medium">
+            {online ? `Oracle Cloud · ${health?.service}` : connectionMode === 'checking' ? 'Conectando…' : 'Modo local (DML)'}
+          </span>
+          <RefreshCw className="w-3 h-3 opacity-60" />
+        </button>
+
+        <NotificacionesBell />
 
         {/* Quick DML Reset */}
         <button
@@ -82,7 +105,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenLogin }) => {
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-300 transition-colors border border-slate-700"
         >
           <RotateCcw className="w-3.5 h-3.5" />
-          <span className="hidden sm:inline">Restablecer DML</span>
+          <span className="hidden sm:inline">{online ? 'Recargar' : 'Restablecer DML'}</span>
         </button>
 
         {/* User Session */}

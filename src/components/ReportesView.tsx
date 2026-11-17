@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useDatabase } from '../context/DatabaseContext';
-import { REPORTS, ReportDefinition } from '../services/reportService';
+import { REPORTS, REPORT_ORDER } from '../services/reportService';
+import { api } from '../services/api';
 import { exportReportToPdf, exportToCsv } from '../utils/pdfExport';
 import {
   FileBarChart2,
@@ -15,7 +16,10 @@ import {
   UtensilsCrossed,
   Filter,
   Lock,
-  Building2
+  Building2,
+  Database,
+  Loader2,
+  AlertTriangle
 } from 'lucide-react';
 import {
   BarChart,
@@ -26,14 +30,17 @@ import {
   ResponsiveContainer,
   PieChart,
   Pie,
-  Cell
+  Cell,
+  AreaChart,
+  Area,
+  CartesianGrid
 } from 'recharts';
 
 const CHART_COLORS = ['#f59e0b', '#3b82f6', '#10b981', '#ec4899', '#8b5cf6', '#06b6d4', '#f97316'];
 
 export const ReportesView: React.FC = () => {
   const dbContext = useDatabase();
-  const { user, restaurantes, selectedRestauranteId, setSelectedRestauranteId } = dbContext;
+  const { user, restaurantes, selectedRestauranteId, setSelectedRestauranteId, isOracleConnected } = dbContext;
 
   const [selectedReportId, setSelectedReportId] = useState<number>(4);
   const [filterCategory, setFilterCategory] = useState<'Todos' | 'Simple' | 'Intermedio' | 'Avanzado'>('Todos');
@@ -44,18 +51,43 @@ export const ReportesView: React.FC = () => {
   const isGerente = user?.rol === 'Gerente';
   const effectiveRestauranteId = isGerente ? user.restauranteId : selectedRestauranteId;
 
-  const filteredReports = REPORTS.filter(r => {
-    if (filterCategory === 'Todos') return true;
-    return r.category === filterCategory;
-  });
+  const ordered = REPORT_ORDER.map(id => REPORTS.find(r => r.id === id)!);
+  const filteredReports = ordered.filter(r => filterCategory === 'Todos' || r.category === filterCategory);
 
   const currentReport = REPORTS.find(r => r.id === selectedReportId) || REPORTS[0];
+  const ctx = { ...dbContext, filterRestauranteId: effectiveRestauranteId ?? null };
+  const scopeId = currentReport.scoped ? effectiveRestauranteId ?? null : null;
+  const activeRestauranteName = !currentReport.scoped
+    ? 'Consolidado nacional (este reporte compara todas las sedes)'
+    : scopeId
+    ? restaurantes.find(r => r.idRestaurante === scopeId)?.nombre || 'Sede'
+    : 'Consolidado nacional (todas las sedes)';
 
-  // Execute report with active restaurant filter
-  const { data, summary, activeRestauranteName } = currentReport.execute({
-    ...dbContext,
-    filterRestauranteId: effectiveRestauranteId
-  });
+  // Modo Oracle: el backend ejecuta el SQL real. Modo local: réplica en TypeScript.
+  const localRows = useMemo(() => currentReport.compute(ctx), [currentReport, dbContext, effectiveRestauranteId]);
+  const [oracle, setOracle] = useState<{ key: string; rows: any[]; ms: number } | null>(null);
+  const [oracleError, setOracleError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const runKey = `${currentReport.id}-${scopeId}-${dbContext.ordenes.length}-${dbContext.lastSync}`;
+
+  useEffect(() => {
+    if (!isOracleConnected) return;
+    let cancel = false;
+    setLoading(true);
+    setOracleError(null);
+    api
+      .report(currentReport.id, scopeId)
+      .then(r => !cancel && setOracle({ key: runKey, rows: r.rows, ms: r.elapsedMs }))
+      .catch(e => !cancel && setOracleError(e.message))
+      .finally(() => !cancel && setLoading(false));
+    return () => {
+      cancel = true;
+    };
+  }, [runKey, isOracleConnected]);
+
+  const fromOracle = isOracleConnected && oracle?.key === runKey && !oracleError;
+  const data: any[] = fromOracle ? oracle!.rows : localRows;
+  const summary = currentReport.summarize(data, ctx);
 
   const handleCopySql = () => {
     navigator.clipboard.writeText(currentReport.sqlQuery);
@@ -64,7 +96,13 @@ export const ReportesView: React.FC = () => {
   };
 
   const handleExportPdf = () => {
-    exportReportToPdf(currentReport, data, summary, user?.nombre || 'Administrador');
+    exportReportToPdf(
+      currentReport,
+      data,
+      summary,
+      user?.nombre || 'Administrador',
+      `${activeRestauranteName} | Fuente: ${fromOracle ? 'Oracle Cloud' : 'motor local'}`
+    );
   };
 
   const handleExportCsv = () => {
@@ -80,7 +118,7 @@ export const ReportesView: React.FC = () => {
             <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
               REQUISITO OBLIGATORIO DE EVALUACIÓN
             </span>
-            <span className="text-xs text-slate-400">11 Reportes: 3 Simples • 4 Intermedios • 4 Complejos</span>
+            <span className="text-xs text-slate-400">12 reportes: 3 simples • 5 intermedios • 4 avanzados (mínimo exigido 3/4/3)</span>
           </div>
           <h2 className="text-2xl font-black text-white tracking-tight mt-1 flex items-center gap-2">
             <span>Centro de Analítica & Reportes de Decisión</span>
@@ -139,8 +177,24 @@ export const ReportesView: React.FC = () => {
           )}
         </div>
 
-        <div className="text-xs text-slate-400">
-          Mostrando datos para: <strong className="text-amber-400">{activeRestauranteName}</strong>
+        <div className="text-xs text-slate-400 flex flex-col items-end gap-1">
+          <span>
+            Mostrando datos para: <strong className="text-amber-400">{activeRestauranteName}</strong>
+          </span>
+          <span className="flex items-center gap-1.5">
+            {loading ? (
+              <Loader2 className="w-3 h-3 animate-spin text-sky-400" />
+            ) : fromOracle ? (
+              <Database className="w-3 h-3 text-emerald-400" />
+            ) : (
+              <AlertTriangle className="w-3 h-3 text-amber-400" />
+            )}
+            {fromOracle
+              ? <span className="text-emerald-400 font-semibold">Ejecutado en Oracle Cloud · {oracle!.ms} ms · {data.length} filas</span>
+              : oracleError
+              ? <span className="text-rose-400">Error Oracle: {oracleError} (se muestra cálculo local)</span>
+              : <span className="text-amber-300">Modo local: réplica del SQL sobre el DML · {data.length} filas</span>}
+          </span>
         </div>
       </div>
 
@@ -159,7 +213,7 @@ export const ReportesView: React.FC = () => {
                   : 'bg-slate-900 text-slate-400 hover:text-white hover:bg-slate-800 border border-slate-800'
               }`}
             >
-              <span>{cat === 'Todos' ? 'Todos los Reportes (11)' : `Reportes ${cat}s`}</span>
+              <span>{cat === 'Todos' ? 'Todos los reportes' : `Reportes ${cat === 'Avanzado' ? 'avanzados' : cat.toLowerCase() + 's'}`}</span>
               <span
                 className={`text-[10px] px-1.5 py-0.2 rounded-md ${
                   isActive ? 'bg-slate-950/20 text-slate-950' : 'bg-slate-800 text-slate-400'
@@ -201,7 +255,7 @@ export const ReportesView: React.FC = () => {
                 >
                   #{rep.id} • {rep.category}
                 </span>
-                {rep.hasChart && <BarChart3 className="w-3.5 h-3.5 text-amber-400" title="Incluye Gráfico Estadístico" />}
+                {rep.hasChart && <BarChart3 className="w-3.5 h-3.5 text-amber-400" aria-label="Incluye Gráfico Estadístico" />}
               </div>
               <p className="text-xs font-bold text-white line-clamp-1">{rep.title}</p>
             </button>
@@ -230,6 +284,13 @@ export const ReportesView: React.FC = () => {
             </div>
 
             <h3 className="text-xl font-bold text-white">{currentReport.title}</h3>
+            <div className="flex flex-wrap gap-1">
+              {currentReport.sqlTechniques.map(t => (
+                <span key={t} className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-950 border border-slate-800 text-slate-300">
+                  {t}
+                </span>
+              ))}
+            </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
               <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
@@ -313,7 +374,18 @@ export const ReportesView: React.FC = () => {
 
             <div className="h-64 w-full">
               <ResponsiveContainer width="100%" height="100%">
-                {currentReport.chartType === 'pie' ? (
+                {currentReport.chartType === 'area' ? (
+                  <AreaChart data={data} margin={{ top: 10, right: 10, left: 10, bottom: 10 }}>
+                    <CartesianGrid stroke="#1e293b" vertical={false} />
+                    <XAxis dataKey={currentReport.chartXKey} stroke="#64748b" fontSize={11} />
+                    <YAxis stroke="#64748b" fontSize={11} tickFormatter={val => `$${(val / 1000).toFixed(0)}k`} />
+                    <Tooltip
+                      formatter={(value: any) => [`$${Number(value).toLocaleString('es-CO')} COP`, currentReport.chartName]}
+                      contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', borderRadius: '12px' }}
+                    />
+                    <Area type="monotone" dataKey={currentReport.chartYKey!} stroke="#f59e0b" strokeWidth={2} fill="#f59e0b" fillOpacity={0.15} />
+                  </AreaChart>
+                ) : currentReport.chartType === 'pie' ? (
                   <PieChart>
                     <Pie
                       data={data}
@@ -408,8 +480,8 @@ export const ReportesView: React.FC = () => {
                               col.align === 'center' ? 'text-center' : col.align === 'right' ? 'text-right' : 'text-left'
                             } ${col.isCurrency ? 'font-mono font-bold text-amber-400' : 'text-slate-300'}`}
                           >
-                            {col.isCurrency && typeof val === 'number'
-                              ? `$${val.toLocaleString('es-CO')} COP`
+                            {col.isCurrency && val !== null && val !== undefined && !isNaN(Number(val))
+                              ? `$${Number(val).toLocaleString('es-CO')} COP`
                               : val !== undefined && val !== null
                               ? String(val)
                               : '-'}

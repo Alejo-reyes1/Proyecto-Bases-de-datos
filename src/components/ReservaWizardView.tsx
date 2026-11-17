@@ -27,31 +27,34 @@ export const ReservaWizardView: React.FC = () => {
     peticionesEspeciales,
     clientes,
     addReserva,
+    addCliente,
+    isOracleConnected,
     user
   } = useDatabase();
+
+  const miCliente = clientes.find(c => c.numeroDocumento === user?.clienteDocumento);
+  const manana = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
 
   const [step, setStep] = useState<1 | 2 | 3 | 4 | 5>(1);
 
   // Form State
   const [selectedRestId, setSelectedRestId] = useState<number>(1);
-  const [fechaReserva, setFechaReserva] = useState<string>('2026-11-20');
+  const [fechaReserva, setFechaReserva] = useState<string>(manana);
   const [horaReserva, setHoraReserva] = useState<string>('19:30');
   const [cantidadPersonas, setCantidadPersonas] = useState<number>(2);
   const [selectedMesaId, setSelectedMesaId] = useState<number>(2);
 
-  const [selectedPeticiones, setSelectedPeticiones] = useState<string[]>([
-    'Mesa con vista panorámica'
-  ]);
-  const [selectedExpId, setSelectedExpId] = useState<number | 0>(1); // e.g., Tour de café
+  const [selectedPeticiones, setSelectedPeticiones] = useState<string[]>([]);
+  const [selectedExpId, setSelectedExpId] = useState<number | 0>(0);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   // Tourist info
-  const [turistaNombre, setTuristaNombre] = useState<string>(
-    user?.rol === 'Turista' ? user.nombre : 'Carlos Gómez'
-  );
-  const [turistaDoc, setTuristaDoc] = useState<string>('1094900101');
-  const [turistaEmail, setTuristaEmail] = useState<string>('carlos.gomez@gmail.com');
-  const [turistaTelefono, setTuristaTelefono] = useState<string>('3104501122');
-  const [turistaPais, setTuristaPais] = useState<string>('CO');
+  const [turistaNombre, setTuristaNombre] = useState<string>(miCliente ? `${miCliente.Nombre} ${miCliente.apellido}` : '');
+  const [turistaDoc, setTuristaDoc] = useState<string>(miCliente?.numeroDocumento || '');
+  const [turistaEmail, setTuristaEmail] = useState<string>(miCliente?.email || '');
+  const [turistaTelefono, setTuristaTelefono] = useState<string>(miCliente?.telefono || '');
+  const [turistaPais, setTuristaPais] = useState<string>(miCliente?.paisOrigen || 'CO');
 
   const [confirmedCode, setConfirmedCode] = useState<string>('');
 
@@ -66,21 +69,49 @@ export const ReservaWizardView: React.FC = () => {
     );
   };
 
-  const handleConfirmReservation = () => {
-    const code = `RES-2026-${Math.floor(1000 + Math.random() * 9000)}`;
-    setConfirmedCode(code);
-
-    addReserva({
+  const handleConfirmReservation = async () => {
+    setSaveError(null);
+    const doc = turistaDoc.trim();
+    if (!doc || !turistaNombre.trim()) {
+      setSaveError('Documento y nombre del titular son obligatorios.');
+      return;
+    }
+    setSaving(true);
+    // Reserva.Cliente_numeroDocumento es FK: si el turista no existe se registra primero en Cliente.
+    if (!clientes.some(c => c.numeroDocumento === doc)) {
+      const [nombre, ...resto] = turistaNombre.trim().split(' ');
+      const rc = await addCliente({
+        numeroDocumento: doc,
+        Nombre: nombre.slice(0, 20),
+        apellido: (resto.join(' ') || '-').slice(0, 20),
+        email: turistaEmail,
+        telefono: turistaTelefono,
+        paisOrigen: turistaPais,
+        TipoDocumento_idTipoDocumento: turistaPais === 'CO' ? 1 : 3,
+      });
+      if (!rc.success) {
+        setSaving(false);
+        setSaveError(rc.message);
+        return;
+      }
+    }
+    const r = await addReserva({
       fechaReserva,
       horaReserva,
       cantidadPersonas,
-      Cliente_numeroDocumento: turistaDoc,
+      Cliente_numeroDocumento: doc,
       Restaurante_idRestaurante: selectedRestId,
-      Estado_idEstado: 2, // Confirmada
+      Estado_idEstado: 1, // Pendiente: la sede la confirma desde el centro de notificaciones
       peticionesEspeciales: selectedPeticiones,
+      peticionesIds: peticionesEspeciales.filter(p => selectedPeticiones.includes(p.nombre)).map(p => p.idPeticion),
       experienciaTuristicaId: selectedExpId > 0 ? selectedExpId : undefined
     });
-
+    setSaving(false);
+    if (!r.success) {
+      setSaveError(r.message);
+      return;
+    }
+    setConfirmedCode(`RES-${String(r.id ?? '').padStart(4, '0')}`);
     setStep(5);
   };
 
@@ -137,7 +168,7 @@ export const ReservaWizardView: React.FC = () => {
       ['Teléfono Móvil', turistaTelefono],
       ['Experiencia Incluida', selectedExpObj ? selectedExpObj.nombreExperiencia : 'Ninguna'],
       ['Peticiones Especiales', selectedPeticiones.join(', ') || 'Estándar'],
-      ['Estado en Oracle DB', 'CONFIRMADA Y REGISTRADA']
+      ['Estado', `PENDIENTE DE CONFIRMACIÓN (${isOracleConnected ? 'registrada en Oracle' : 'registrada en modo local'})`]
     ];
 
     autoTable(doc, {
@@ -509,6 +540,15 @@ export const ReservaWizardView: React.FC = () => {
             </div>
           </div>
 
+          {saveError && (
+            <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-xs text-rose-300">{saveError}</div>
+          )}
+          {!clientes.some(c => c.numeroDocumento === turistaDoc.trim()) && turistaDoc.trim() && (
+            <div className="p-3 rounded-xl bg-sky-500/10 border border-sky-500/20 text-xs text-sky-300">
+              Este documento no existe en la tabla Cliente: se registrará automáticamente antes de la reserva (integridad referencial).
+            </div>
+          )}
+
           {/* Booking Summary Box */}
           <div className="p-4 rounded-xl bg-slate-950 border border-slate-800/80 space-y-2 text-xs">
             <h4 className="font-bold text-amber-400 uppercase tracking-wider">Resumen de la Solicitud</h4>
@@ -542,10 +582,11 @@ export const ReservaWizardView: React.FC = () => {
             </button>
             <button
               onClick={handleConfirmReservation}
-              className="px-6 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs shadow-lg shadow-emerald-500/25 transition-all flex items-center gap-2"
+              disabled={saving}
+              className="px-6 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 font-black text-xs shadow-lg shadow-emerald-500/25 transition-all flex items-center gap-2"
             >
               <CheckCircle className="w-4 h-4" />
-              <span>Confirmar y Guardar Reserva en Oracle DB</span>
+              <span>{saving ? 'Guardando…' : 'Confirmar y guardar reserva'}</span>
             </button>
           </div>
         </div>
@@ -562,9 +603,11 @@ export const ReservaWizardView: React.FC = () => {
             <span className="px-3 py-1 rounded-full text-xs font-mono font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">
               CÓDIGO OFICIAL: {confirmedCode}
             </span>
-            <h3 className="text-2xl font-black text-white mt-2">¡Reserva Confirmada Exitosamente!</h3>
+            <h3 className="text-2xl font-black text-white mt-2">¡Reserva registrada!</h3>
             <p className="text-xs text-slate-400 max-w-md mx-auto mt-1">
-              Los registros han sido insertados de manera conforme en las tablas <strong>Reserva</strong> y <strong>ReservaPeticionesEsp</strong> de Oracle Autonomous DB.
+              Se insertó en <strong>Reserva</strong> y <strong>ReservaPeticionesEsp</strong>{' '}
+              {isOracleConnected ? 'de Oracle Autonomous Database (COMMIT)' : '(modo local, sin conexión a Oracle)'}. La sede recibirá
+              la notificación para confirmarla.
             </p>
           </div>
 

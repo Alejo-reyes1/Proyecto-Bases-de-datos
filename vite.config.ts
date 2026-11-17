@@ -11,5 +11,9 @@ export default defineConfig({
   server: {
     port: 5173,
     host: true,
+    // Las peticiones /api se envían al backend Node que habla con Oracle.
+    proxy: {
+      '/api': 'http://localhost:3001',
+    },
   },
 });

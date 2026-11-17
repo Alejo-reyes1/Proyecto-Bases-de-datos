@@ -1,15 +1,10 @@
-import {
-  Restaurante,
-  Cliente,
-  ExperienciaTuristica,
-  Orden,
-  CartaMenu,
-  ItemMenu,
-  Resena,
-  Pais,
-  Ciudad,
-  Personal
-} from '../types';
+// Definición de los 12 reportes de decisión.
+// - sqlQuery: texto oficial (shared/reportQueries.js) que el backend ejecuta en Oracle.
+// - compute(): réplica en TypeScript del MISMO SQL para el modo sin conexión. Devuelve
+//   filas con las mismas claves que los alias del SQL (en minúscula), igual que Oracle.
+// - summarize(): indicadores calculados sobre las filas (sirve para ambos modos).
+import { Dataset, Orden } from '../types';
+import { REPORT_SQL } from '../../shared/reportQueries.js';
 
 export interface ReportColumn {
   key: string;
@@ -23,19 +18,7 @@ export interface ReportSummaryItem {
   value: string | number;
 }
 
-export interface ReportContext {
-  restaurantes: Restaurante[];
-  clientes: Cliente[];
-  experiencias: ExperienciaTuristica[];
-  ordenes: Orden[];
-  cartasMenu: CartaMenu[];
-  itemsMenu: ItemMenu[];
-  resenas: Resena[];
-  paises: Pais[];
-  ciudades: Ciudad[];
-  personal: Personal[];
-  filterRestauranteId?: number | null;
-}
+export type ReportContext = Dataset & { filterRestauranteId?: number | null };
 
 export interface ReportDefinition {
   id: number;
@@ -43,7 +26,9 @@ export interface ReportDefinition {
   title: string;
   subtitle: string;
   businessGoal: string;
-  managementContext: string; // Trasfondo de negocio para gerentes
+  managementContext: string;
+  sqlTechniques: string[];
+  scoped: boolean; // true si respeta el filtro de sede (:idRestaurante)
   sqlQuery: string;
   hasChart: boolean;
   chartType?: 'bar' | 'pie' | 'area';
@@ -51,824 +36,572 @@ export interface ReportDefinition {
   chartYKey?: string;
   chartName?: string;
   columns: ReportColumn[];
-  execute: (context: ReportContext) => {
-    data: any[];
-    summary: ReportSummaryItem[];
-    activeRestauranteName: string;
-  };
+  compute: (ctx: ReportContext) => any[];
+  summarize: (rows: any[], ctx: ReportContext) => ReportSummaryItem[];
 }
 
+// ------------------------------------------------------------------ utilidades
+const CANCELADA = 7;
+const money = (n: number) => `$${Math.round(n || 0).toLocaleString('es-CO')} COP`;
+const sum = (xs: number[]) => xs.reduce((a, b) => a + (Number(b) || 0), 0);
+const avg = (xs: number[]) => (xs.length ? sum(xs) / xs.length : 0);
+const round = (n: number, d = 0) => Math.round(n * 10 ** d) / 10 ** d;
+const groupBy = <T,>(xs: T[], key: (x: T) => string | number) =>
+  xs.reduce<Map<string | number, T[]>>((m, x) => {
+    const k = key(x);
+    m.set(k, [...(m.get(k) || []), x]);
+    return m;
+  }, new Map());
+// Desempate como Oracle (comparación binaria de VARCHAR2)
+const cmp = (a: unknown, b: unknown) => (a < b ? -1 : a > b ? 1 : 0);
+const inScope = (ctx: ReportContext, rid?: number) => !ctx.filterRestauranteId || rid === ctx.filterRestauranteId;
+const activas = (ctx: ReportContext) => ctx.ordenes.filter(o => o.Estado_idEstado !== CANCELADA);
+const salon = (ordenes: Orden[]) => ordenes.filter(o => o.tipo === 'Restaurante' && o.mesaId);
+const sql = (id: number) => `${REPORT_SQL[id as keyof typeof REPORT_SQL]};`;
+
+/** Sumatoria de ventas en salón por sede (base de los reportes 4 y 8). */
+const ventasSalonPorSede = (ctx: ReportContext) => {
+  const restDeMesa = new Map(ctx.mesas.map(m => [m.idMesa, m.Restaurante_idRestaurante]));
+  return groupBy(salon(activas(ctx)), o => restDeMesa.get(o.mesaId!) as number);
+};
+
 export const REPORTS: ReportDefinition[] = [
-  // ==========================================
-  // 1. REPORTES SIMPLES (1 sola tabla)
-  // ==========================================
+  // ============================================================ SIMPLES
   {
     id: 1,
     category: 'Simple',
     title: 'Catálogo de Restaurantes y Horarios de Atención',
-    subtitle: 'Consulta a la tabla Restaurante con ordenamiento alfabético',
-    businessGoal: 'Permite a los operadores turísticos conocer la oferta gastronómica disponible, categorizada por tipo de cocina y franjas horarias de servicio.',
-    managementContext: 'Auditoría de horarios y cobertura horaria para turistas matutinos (desayunos cafeteros) y nocturnos.',
-    sqlQuery: `-- REPORTE SIMPLE 1: Consulta a una sola tabla (Restaurante)
-SELECT 
-    idRestaurante,
-    nit,
-    nombre,
-    direccion,
-    categoriaCocina,
-    TO_CHAR(horaApertura, 'HH24:MI') AS apertura,
-    TO_CHAR(horaCierre, 'HH24:MI') AS cierre,
-    Ciudad_idCiudad AS codigo_ciudad
-FROM Restaurante
-WHERE (:idRestaurante IS NULL OR idRestaurante = :idRestaurante)
-ORDER BY nombre ASC;`,
+    subtitle: 'Una tabla: Restaurante · ORDER BY nombre',
+    businessGoal: 'Permite a los operadores turísticos conocer la oferta gastronómica disponible por tipo de cocina y franja horaria de servicio.',
+    managementContext: 'Auditoría de horarios para turistas matutinos (desayunos cafeteros) y nocturnos.',
+    sqlTechniques: ['SELECT', 'WHERE con bind', 'TO_CHAR', 'ORDER BY'],
+    scoped: true,
+    sqlQuery: sql(1),
     hasChart: false,
     columns: [
-      { key: 'idRestaurante', header: 'ID', align: 'center' },
+      { key: 'idrestaurante', header: 'ID', align: 'center' },
       { key: 'nit', header: 'NIT' },
       { key: 'nombre', header: 'Restaurante' },
-      { key: 'categoriaCocina', header: 'Especialidad Culinaria' },
+      { key: 'categoriacocina', header: 'Especialidad' },
       { key: 'direccion', header: 'Dirección' },
-      { key: 'horario', header: 'Horario Operativo', align: 'center' },
-      { key: 'Ciudad_idCiudad', header: 'Cód. Ciudad', align: 'center' },
+      { key: 'apertura', header: 'Apertura', align: 'center' },
+      { key: 'cierre', header: 'Cierre', align: 'center' },
+      { key: 'codigo_ciudad', header: 'Cód. Ciudad', align: 'center' },
     ],
-    execute: ({ restaurantes, filterRestauranteId }) => {
-      const activeRest = filterRestauranteId ? restaurantes.find(r => r.idRestaurante === filterRestauranteId) : null;
-      const targetRestaurantes = filterRestauranteId
-        ? restaurantes.filter(r => r.idRestaurante === filterRestauranteId)
-        : restaurantes;
-
-      const data = targetRestaurantes.map(r => ({
-        idRestaurante: r.idRestaurante,
-        nit: r.nit,
-        nombre: r.nombre,
-        categoriaCocina: r.categoriaCocina,
-        direccion: r.direccion,
-        horario: `${r.horaApertura} - ${r.horaCierre}`,
-        Ciudad_idCiudad: r.Ciudad_idCiudad
-      }));
-
-      return {
-        data,
-        activeRestauranteName: activeRest ? activeRest.nombre : 'Consolidado Nacional (Todas las Sedes)',
-        summary: [
-          { label: 'Sedes Auditadas', value: data.length },
-          { label: 'Cocinas Distintas', value: new Set(data.map(r => r.categoriaCocina)).size }
-        ]
-      };
-    }
+    compute: ctx =>
+      ctx.restaurantes
+        .filter(r => inScope(ctx, r.idRestaurante))
+        .sort((a, b) => a.nombre.localeCompare(b.nombre))
+        .map(r => ({
+          idrestaurante: r.idRestaurante,
+          nit: r.nit,
+          nombre: r.nombre,
+          direccion: r.direccion,
+          categoriacocina: r.categoriaCocina,
+          apertura: r.horaApertura,
+          cierre: r.horaCierre,
+          codigo_ciudad: r.Ciudad_idCiudad,
+        })),
+    summarize: rows => [
+      { label: 'Sedes listadas', value: rows.length },
+      { label: 'Apertura más temprana', value: rows.map(r => r.apertura).sort()[0] || '-' },
+      { label: 'Cierre más tardío', value: rows.map(r => r.cierre).sort().at(-1) || '-' },
+    ],
   },
-
   {
     id: 2,
     category: 'Simple',
-    title: 'Directorio de Turistas Registrados por País de Origen',
-    subtitle: 'Consulta a la tabla Cliente filtrando por procedencia',
-    businessGoal: 'Identificar el flujo de viajeros nacionales e internacionales para orientar campañas de fidelización y estrategias de marketing turístico.',
-    managementContext: 'Mapeo de la afluencia turística internacional para optimizar señalética bilingüe y cartas multilingües.',
-    sqlQuery: `-- REPORTE SIMPLE 2: Consulta a una sola tabla (Cliente)
-SELECT 
-    numeroDocumento,
-    Nombre,
-    apellido,
-    email,
-    telefono,
-    paisOrigen
-FROM Cliente
-ORDER BY paisOrigen ASC, apellido ASC;`,
+    title: 'Directorio de Clientes por País de Origen',
+    subtitle: 'Una tabla: Cliente · ORDER BY paisOrigen, apellido',
+    businessGoal: 'Identificar el flujo de viajeros nacionales e internacionales para orientar campañas de fidelización y marketing turístico.',
+    managementContext: 'Mapa de la afluencia internacional para cartas multilingües y señalética bilingüe.',
+    sqlTechniques: ['SELECT', 'ORDER BY compuesto'],
+    scoped: false,
+    sqlQuery: sql(2),
     hasChart: false,
     columns: [
-      { key: 'numeroDocumento', header: 'Identificación' },
-      { key: 'nombreCompleto', header: 'Turista / Cliente' },
-      { key: 'paisOrigen', header: 'País Origen', align: 'center' },
-      { key: 'email', header: 'Correo Electrónico' },
-      { key: 'telefono', header: 'Teléfono Móvil' }
+      { key: 'numerodocumento', header: 'Identificación' },
+      { key: 'nombre', header: 'Nombre' },
+      { key: 'apellido', header: 'Apellido' },
+      { key: 'paisorigen', header: 'País', align: 'center' },
+      { key: 'email', header: 'Correo electrónico' },
+      { key: 'telefono', header: 'Teléfono' },
     ],
-    execute: ({ clientes }) => {
-      const data = clientes.map(c => ({
-        numeroDocumento: c.numeroDocumento,
-        nombreCompleto: `${c.Nombre} ${c.apellido}`,
-        paisOrigen: c.paisOrigen,
-        email: c.email,
-        telefono: c.telefono
-      }));
-      const internacionales = clientes.filter(c => c.paisOrigen !== 'CO').length;
-      return {
-        data,
-        activeRestauranteName: 'Padrón Central de Turistas',
-        summary: [
-          { label: 'Total Turistas Registrados', value: data.length },
-          { label: 'Extranjeros', value: internacionales },
-          { label: 'Locales (Colombia)', value: data.length - internacionales }
-        ]
-      };
-    }
+    compute: ctx =>
+      [...ctx.clientes]
+        .sort((a, b) => a.paisOrigen.localeCompare(b.paisOrigen) || a.apellido.localeCompare(b.apellido))
+        .map(c => ({
+          numerodocumento: c.numeroDocumento,
+          nombre: c.Nombre,
+          apellido: c.apellido,
+          email: c.email,
+          telefono: c.telefono,
+          paisorigen: c.paisOrigen,
+        })),
+    summarize: rows => {
+      const ext = rows.filter(r => r.paisorigen !== 'CO').length;
+      return [
+        { label: 'Clientes', value: rows.length },
+        { label: 'Países distintos', value: new Set(rows.map(r => r.paisorigen)).size },
+        { label: 'Extranjeros', value: `${ext} (${rows.length ? Math.round((ext / rows.length) * 100) : 0}%)` },
+      ];
+    },
   },
-
   {
     id: 3,
     category: 'Simple',
-    title: 'Portafolio de Experiencias Gastronómicas y Tarifas Vigentes',
-    subtitle: 'Consulta a la tabla ExperienciaTuristica ordenado por tarifa',
-    businessGoal: 'Monitorear la cartera de tours, catas y talleres culinarios activos junto con su duración e impacto tarifario por comensal.',
-    managementContext: 'Rentabilidad de tours temáticos por hora de servicio para el restaurante organizador.',
-    sqlQuery: `-- REPORTE SIMPLE 3: Consulta a una sola tabla (ExperienciaTuristica)
-SELECT 
-    idExperiencia,
-    nombreExperiencia,
-    duracion AS duracion_horas,
-    precioPorPersona,
-    Restaurante_idRestaurante AS id_restaurante
-FROM ExperienciaTuristica
-WHERE (:idRestaurante IS NULL OR Restaurante_idRestaurante = :idRestaurante)
-ORDER BY precioPorPersona DESC;`,
+    title: 'Portafolio de Experiencias y Tarifas Vigentes',
+    subtitle: 'Una tabla: ExperienciaTuristica · ORDER BY precio DESC',
+    businessGoal: 'Monitorear la cartera de tours, catas y talleres con su duración y tarifa por persona.',
+    managementContext: 'Rentabilidad por hora de los tours temáticos de cada sede.',
+    sqlTechniques: ['SELECT', 'Alias de columna', 'WHERE con bind', 'ORDER BY'],
+    scoped: true,
+    sqlQuery: sql(3),
     hasChart: false,
     columns: [
-      { key: 'idExperiencia', header: 'ID', align: 'center' },
-      { key: 'nombreExperiencia', header: 'Experiencia Turística' },
-      { key: 'duracion', header: 'Duración (Horas)', align: 'center' },
-      { key: 'precioPorPersona', header: 'Precio por Turista', isCurrency: true, align: 'right' },
-      { key: 'Restaurante_idRestaurante', header: 'Sede Restaurante', align: 'center' }
+      { key: 'idexperiencia', header: 'ID', align: 'center' },
+      { key: 'nombreexperiencia', header: 'Experiencia' },
+      { key: 'descripcion', header: 'Descripción' },
+      { key: 'duracion_horas', header: 'Duración (h)', align: 'center' },
+      { key: 'precioporpersona', header: 'Precio por persona', isCurrency: true, align: 'right' },
+      { key: 'id_restaurante', header: 'Sede', align: 'center' },
     ],
-    execute: ({ experiencias, restaurantes, filterRestauranteId }) => {
-      const activeRest = filterRestauranteId ? restaurantes.find(r => r.idRestaurante === filterRestauranteId) : null;
-      const filtered = filterRestauranteId
-        ? experiencias.filter(e => e.Restaurante_idRestaurante === filterRestauranteId)
-        : experiencias;
-
-      const data = filtered.map(e => ({
-        idExperiencia: e.idExperiencia,
-        nombreExperiencia: e.nombreExperiencia,
-        duracion: `${e.duracion} hrs`,
-        precioPorPersona: e.precioPorPersona,
-        Restaurante_idRestaurante: activeRest?.nombre || `Sede #${e.Restaurante_idRestaurante}`
-      }));
-
-      const avgPrice = data.length ? Math.round(data.reduce((s, x) => s + x.precioPorPersona, 0) / data.length) : 0;
-      return {
-        data,
-        activeRestauranteName: activeRest ? activeRest.nombre : 'Consolidado Nacional de Tours',
-        summary: [
-          { label: 'Experiencias Ofrecidas', value: data.length },
-          { label: 'Tarifa Media', value: `$${avgPrice.toLocaleString('es-CO')} COP` }
-        ]
-      };
-    }
+    compute: ctx =>
+      ctx.experiencias
+        .filter(e => inScope(ctx, e.Restaurante_idRestaurante))
+        .sort((a, b) => b.precioPorPersona - a.precioPorPersona)
+        .map(e => ({
+          idexperiencia: e.idExperiencia,
+          nombreexperiencia: e.nombreExperiencia,
+          descripcion: e.descripcion,
+          duracion_horas: e.duracion,
+          precioporpersona: e.precioPorPersona,
+          id_restaurante: e.Restaurante_idRestaurante,
+        })),
+    summarize: rows => [
+      { label: 'Experiencias', value: rows.length },
+      { label: 'Tarifa promedio', value: money(avg(rows.map(r => r.precioporpersona))) },
+      { label: 'Duración promedio', value: `${round(avg(rows.map(r => r.duracion_horas)), 1)} h` },
+    ],
   },
 
-  // ==========================================
-  // 2. REPORTES INTERMEDIOS (GROUP BY, HAVING, WHERE, JOINs)
-  // ==========================================
+  // ============================================================ INTERMEDIOS
   {
     id: 4,
     category: 'Intermedio',
-    title: 'Facturación y Ventas Totales por Sede (Bonificación Gráfica)',
-    subtitle: 'Consulta multitabla (Restaurante, Mesa, OrdenRestaurante, Orden) con GROUP BY y SUM',
-    businessGoal: 'Evaluar el rendimiento comercial de la sede gastronómica para liquidación contable y análisis de rentabilidad turística.',
-    managementContext: 'Control gerencial de recaudación por mesas y órdenes de delivery en destinos turísticos.',
-    sqlQuery: `-- REPORTE INTERMEDIO 1: Multitabla con GROUP BY, SUM y JOIN
-SELECT 
-    r.idRestaurante,
-    r.nombre AS restaurante,
-    c.nombre AS ciudad,
-    COUNT(o.idOrden) AS total_pedidos,
-    NVL(SUM(o.total), 0) AS total_facturado
-FROM Restaurante r
-JOIN Ciudad c ON r.Ciudad_idCiudad = c.idCiudad
-LEFT JOIN Mesa m ON r.idRestaurante = m.Restaurante_idRestaurante
-LEFT JOIN OrdenRestaurante ore ON m.idMesa = ore.Mesa_idMesa
-LEFT JOIN Orden o ON ore.Orden_idOrden = o.idOrden
-WHERE (:idRestaurante IS NULL OR r.idRestaurante = :idRestaurante)
-GROUP BY r.idRestaurante, r.nombre, c.nombre
-ORDER BY total_facturado DESC;`,
+    title: 'Ventas en Salón por Sede',
+    subtitle: 'Restaurante ⋈ Ciudad ⟕ Mesa ⟕ OrdenRestaurante ⟕ Orden · GROUP BY',
+    businessGoal: 'Evaluar el rendimiento comercial de cada sede para liquidación contable y análisis de rentabilidad.',
+    managementContext: 'Control del recaudo por mesas; excluye órdenes canceladas.',
+    sqlTechniques: ['JOIN', 'LEFT JOIN', 'GROUP BY', 'COUNT', 'SUM', 'NVL'],
+    scoped: true,
+    sqlQuery: sql(4),
     hasChart: true,
     chartType: 'bar',
     chartXKey: 'restaurante',
     chartYKey: 'total_facturado',
-    chartName: 'Ventas Totales ($ COP)',
+    chartName: 'Ventas en salón ($ COP)',
     columns: [
       { key: 'restaurante', header: 'Restaurante' },
-      { key: 'ciudad', header: 'Ciudad Destino' },
-      { key: 'total_pedidos', header: 'Órdenes Atendidas', align: 'center' },
-      { key: 'total_facturado', header: 'Facturación Consolidada', isCurrency: true, align: 'right' }
+      { key: 'ciudad', header: 'Ciudad' },
+      { key: 'total_pedidos', header: 'Órdenes', align: 'center' },
+      { key: 'total_facturado', header: 'Facturación', isCurrency: true, align: 'right' },
     ],
-    execute: ({ restaurantes, ordenes, ciudades, filterRestauranteId }) => {
-      const activeRest = filterRestauranteId ? restaurantes.find(r => r.idRestaurante === filterRestauranteId) : null;
-      const targetRestaurantes = filterRestauranteId
-        ? restaurantes.filter(r => r.idRestaurante === filterRestauranteId)
-        : restaurantes;
-
-      const data = targetRestaurantes.map(r => {
-        const ciudad = ciudades.find(c => c.idCiudad === r.Ciudad_idCiudad)?.nombre || r.Ciudad_idCiudad;
-        let totalFacturado = 0;
-        let totalPedidos = 0;
-
-        ordenes.forEach(o => {
-          const isLinked = (r.idRestaurante === 1 && [1, 2, 7].includes(o.idOrden)) ||
-                           (r.idRestaurante === 2 && [2, 8].includes(o.idOrden)) ||
-                           (r.idRestaurante === 3 && [3, 9].includes(o.idOrden)) ||
-                           (r.idRestaurante === 4 && [4, 10].includes(o.idOrden)) ||
-                           (r.idRestaurante === 5 && [5, 11].includes(o.idOrden)) ||
-                           (r.idRestaurante === 6 && [6, 12].includes(o.idOrden));
-          if (isLinked) {
-            totalPedidos++;
-            totalFacturado += o.total;
-          }
-        });
-
-        return {
-          idRestaurante: r.idRestaurante,
-          restaurante: r.nombre,
-          ciudad,
-          total_pedidos: totalPedidos,
-          total_facturado: totalFacturado
-        };
-      }).sort((a, b) => b.total_facturado - a.total_facturado);
-
-      const granTotal = data.reduce((s, d) => s + d.total_facturado, 0);
-      return {
-        data,
-        activeRestauranteName: activeRest ? activeRest.nombre : 'Consolidado Nacional (Todas las Sedes)',
-        summary: [
-          { label: 'Facturación Total', value: `$${granTotal.toLocaleString('es-CO')} COP` },
-          { label: 'Sede Principal', value: data[0]?.restaurante || 'N/A' }
-        ]
-      };
-    }
+    compute: ctx => {
+      const ventas = ventasSalonPorSede(ctx);
+      return ctx.restaurantes
+        .filter(r => inScope(ctx, r.idRestaurante))
+        .map(r => {
+          const os = ventas.get(r.idRestaurante) || [];
+          return {
+            idrestaurante: r.idRestaurante,
+            restaurante: r.nombre,
+            ciudad: ctx.ciudades.find(c => c.idCiudad === r.Ciudad_idCiudad)?.nombre,
+            total_pedidos: os.length,
+            total_facturado: sum(os.map(o => o.total)),
+          };
+        })
+        .sort((a, b) => b.total_facturado - a.total_facturado || a.idrestaurante - b.idrestaurante);
+    },
+    summarize: rows => [
+      { label: 'Facturación total', value: money(sum(rows.map(r => r.total_facturado))) },
+      { label: 'Órdenes', value: sum(rows.map(r => r.total_pedidos)) },
+      { label: 'Sede líder', value: rows[0]?.restaurante || '-' },
+    ],
   },
-
   {
     id: 5,
     category: 'Intermedio',
-    title: 'Top Experiencias Turísticas más Demandadas (Bonificación Gráfica)',
-    subtitle: 'Consulta multitabla (ExperienciaTuristica, DetalleExperienciaOrden, Restaurante) con GROUP BY y HAVING',
-    businessGoal: 'Detectar qué tours y talleres generan mayor flujo de turistas y mayores ingresos para ampliar cupos y calendarización.',
-    managementContext: 'Planificación de guías bilingües y compra anticipada de insumos según asistencia a talleres culinarios.',
-    sqlQuery: `-- REPORTE INTERMEDIO 2: Multitabla con GROUP BY, HAVING y SUM
-SELECT 
-    e.nombreExperiencia,
-    r.nombre AS restaurante_anfitrion,
-    SUM(deo.asistentes) AS total_turistas,
-    SUM(deo.subtotal) AS ingreso_acumulado
-FROM ExperienciaTuristica e
-JOIN Restaurante r ON e.Restaurante_idRestaurante = r.idRestaurante
-JOIN DetalleExperienciaOrden deo ON e.idExperiencia = deo.ExperienciaTuristica_idExperiencia
-WHERE (:idRestaurante IS NULL OR r.idRestaurante = :idRestaurante)
-GROUP BY e.nombreExperiencia, r.nombre
-HAVING SUM(deo.asistentes) >= 1
-ORDER BY total_turistas DESC;`,
+    title: 'Experiencias Turísticas más Demandadas',
+    subtitle: 'ExperienciaTuristica ⋈ Restaurante ⋈ DetalleExperienciaOrden · GROUP BY · HAVING',
+    businessGoal: 'Detectar qué tours y talleres atraen más turistas e ingresos para ampliar cupos y calendario.',
+    managementContext: 'Planificación de guías bilingües y compra anticipada de insumos según asistencia.',
+    sqlTechniques: ['JOIN', 'GROUP BY', 'COUNT DISTINCT', 'SUM', 'HAVING'],
+    scoped: true,
+    sqlQuery: sql(5),
     hasChart: true,
     chartType: 'pie',
-    chartXKey: 'nombreExperiencia',
+    chartXKey: 'nombreexperiencia',
     chartYKey: 'total_turistas',
-    chartName: 'Turistas por Experiencia',
+    chartName: 'Turistas por experiencia',
     columns: [
-      { key: 'nombreExperiencia', header: 'Experiencia Turística' },
-      { key: 'restaurante_anfitrion', header: 'Restaurante Anfitrión' },
-      { key: 'total_turistas', header: 'Turistas Asistentes', align: 'center' },
-      { key: 'ingreso_acumulado', header: 'Ingreso Generado', isCurrency: true, align: 'right' }
+      { key: 'nombreexperiencia', header: 'Experiencia' },
+      { key: 'restaurante_anfitrion', header: 'Restaurante anfitrión' },
+      { key: 'ordenes', header: 'Órdenes', align: 'center' },
+      { key: 'total_turistas', header: 'Turistas', align: 'center' },
+      { key: 'ingreso_acumulado', header: 'Ingreso', isCurrency: true, align: 'right' },
     ],
-    execute: ({ experiencias, restaurantes, ordenes, filterRestauranteId }) => {
-      const activeRest = filterRestauranteId ? restaurantes.find(r => r.idRestaurante === filterRestauranteId) : null;
-      const targetExperiencias = filterRestauranteId
-        ? experiencias.filter(e => e.Restaurante_idRestaurante === filterRestauranteId)
-        : experiencias;
-
-      const data = targetExperiencias.map(e => {
-        const rest = restaurantes.find(r => r.idRestaurante === e.Restaurante_idRestaurante)?.nombre || 'Sede';
-        let turistas = 0;
-        let subtotal = 0;
-
-        ordenes.forEach(o => {
-          o.detallesExperiencia?.forEach(de => {
-            if (de.ExperienciaTuristica_idExperiencia === e.idExperiencia) {
-              turistas += de.asistentes;
-              subtotal += de.subtotal;
-            }
-          });
-        });
-
-        return {
-          nombreExperiencia: e.nombreExperiencia,
-          restaurante_anfitrion: rest,
-          total_turistas: turistas,
-          ingreso_acumulado: subtotal
-        };
-      }).filter(d => d.total_turistas > 0).sort((a, b) => b.total_turistas - a.total_turistas);
-
-      const totalTuristas = data.reduce((s, d) => s + d.total_turistas, 0);
-      const totalIngresoExp = data.reduce((s, d) => s + d.ingreso_acumulado, 0);
-
-      return {
-        data,
-        activeRestauranteName: activeRest ? activeRest.nombre : 'Consolidado Nacional de Tours',
-        summary: [
-          { label: 'Total Turistas en Tours', value: totalTuristas },
-          { label: 'Ingresos por Experiencias', value: `$${totalIngresoExp.toLocaleString('es-CO')} COP` }
-        ]
-      };
-    }
+    compute: ctx => {
+      const det = ctx.ordenes.flatMap(o => o.detallesExperiencia || []);
+      return ctx.experiencias
+        .filter(e => inScope(ctx, e.Restaurante_idRestaurante))
+        .map(e => {
+          const d = det.filter(x => x.ExperienciaTuristica_idExperiencia === e.idExperiencia);
+          return {
+            idexperiencia: e.idExperiencia,
+            nombreexperiencia: e.nombreExperiencia,
+            restaurante_anfitrion: ctx.restaurantes.find(r => r.idRestaurante === e.Restaurante_idRestaurante)?.nombre,
+            ordenes: new Set(d.map(x => x.Orden_idOrden)).size,
+            total_turistas: sum(d.map(x => x.asistentes)),
+            ingreso_acumulado: sum(d.map(x => x.subtotal)),
+          };
+        })
+        .filter(r => r.total_turistas >= 1) // HAVING SUM(asistentes) >= 1
+        .sort((a, b) => b.total_turistas - a.total_turistas || b.ingreso_acumulado - a.ingreso_acumulado || a.idexperiencia - b.idexperiencia);
+    },
+    summarize: rows => [
+      { label: 'Turistas atendidos', value: sum(rows.map(r => r.total_turistas)) },
+      { label: 'Ingreso por experiencias', value: money(sum(rows.map(r => r.ingreso_acumulado))) },
+      { label: 'Más demandada', value: rows[0]?.nombreexperiencia || '-' },
+    ],
   },
-
   {
     id: 6,
     category: 'Intermedio',
-    title: 'Calificación y Satisfacción de Clientes (Bonificación Gráfica)',
-    subtitle: 'Consulta multitabla (Restaurante, Resena) con promedios ponderados y agrupamiento',
-    businessGoal: 'Auditar la calidad del servicio gastronómico y atención al cliente en cada sede turística para mantener sellos de excelencia.',
-    managementContext: 'Supervisión de tiempos de cocina y amabilidad del personal en sala para turistas extranjeros.',
-    sqlQuery: `-- REPORTE INTERMEDIO 3: Multitabla con AVG, ROUND, COUNT y GROUP BY
-SELECT 
-    r.nombre AS restaurante,
-    r.categoriaCocina,
-    ROUND(AVG(res.puntuacionComida), 2) AS prom_comida,
-    ROUND(AVG(res.puntuacionServicio), 2) AS prom_servicio,
-    ROUND(AVG((res.puntuacionComida + res.puntuacionServicio)/2), 2) AS calificacion_global,
-    COUNT(res.idResena) AS total_opiniones
-FROM Restaurante r
-JOIN Resena res ON r.idRestaurante = res.Restaurante_idRestaurante
-WHERE (:idRestaurante IS NULL OR r.idRestaurante = :idRestaurante)
-GROUP BY r.nombre, r.categoriaCocina
-HAVING COUNT(res.idResena) > 0
-ORDER BY calificacion_global DESC;`,
+    title: 'Calificación y Satisfacción por Restaurante',
+    subtitle: 'Restaurante ⋈ Resena · AVG · ROUND · COUNT · HAVING',
+    businessGoal: 'Auditar la calidad de la comida y del servicio en cada sede para sostener la reputación turística.',
+    managementContext: 'Seguimiento a tiempos de cocina y atención en sala a turistas extranjeros.',
+    sqlTechniques: ['JOIN', 'GROUP BY', 'AVG', 'ROUND', 'COUNT', 'HAVING'],
+    scoped: true,
+    sqlQuery: sql(6),
     hasChart: true,
     chartType: 'bar',
     chartXKey: 'restaurante',
     chartYKey: 'calificacion_global',
-    chartName: 'Calificación Global (1-5 ⭐)',
+    chartName: 'Calificación global (1-5)',
     columns: [
       { key: 'restaurante', header: 'Restaurante' },
-      { key: 'categoriaCocina', header: 'Cocina' },
-      { key: 'prom_comida', header: 'Puntuación Comida', align: 'center' },
-      { key: 'prom_servicio', header: 'Puntuación Servicio', align: 'center' },
-      { key: 'calificacion_global', header: 'Nota Global (1-5 ⭐)', align: 'center' },
-      { key: 'total_opiniones', header: 'Reseñas Auditadas', align: 'center' }
+      { key: 'categoriacocina', header: 'Cocina' },
+      { key: 'prom_comida', header: 'Comida', align: 'center' },
+      { key: 'prom_servicio', header: 'Servicio', align: 'center' },
+      { key: 'calificacion_global', header: 'Global (1-5)', align: 'center' },
+      { key: 'total_opiniones', header: 'Reseñas', align: 'center' },
     ],
-    execute: ({ restaurantes, resenas, filterRestauranteId }) => {
-      const activeRest = filterRestauranteId ? restaurantes.find(r => r.idRestaurante === filterRestauranteId) : null;
-      const targetRestaurantes = filterRestauranteId
-        ? restaurantes.filter(r => r.idRestaurante === filterRestauranteId)
-        : restaurantes;
-
-      const data = targetRestaurantes.map(r => {
-        const rResenas = resenas.filter(res => res.Restaurante_idRestaurante === r.idRestaurante);
-        if (rResenas.length === 0) return null;
-        const promComida = +(rResenas.reduce((s, x) => s + x.puntuacionComida, 0) / rResenas.length).toFixed(2);
-        const promServicio = +(rResenas.reduce((s, x) => s + x.puntuacionServicio, 0) / rResenas.length).toFixed(2);
-        const califGlobal = +((promComida + promServicio) / 2).toFixed(2);
-
-        return {
-          restaurante: r.nombre,
-          categoriaCocina: r.categoriaCocina,
-          prom_comida: promComida,
-          prom_servicio: promServicio,
-          calificacion_global: califGlobal,
-          total_opiniones: rResenas.length
-        };
-      }).filter(Boolean) as any[];
-
-      const avgGlobal = data.length > 0 ? (data.reduce((s, d) => s + d.calificacion_global, 0) / data.length).toFixed(2) : '5.0';
-
-      return {
-        data,
-        activeRestauranteName: activeRest ? activeRest.nombre : 'Consolidado de Calidad Nacional',
-        summary: [
-          { label: 'Sedes Auditadas', value: data.length },
-          { label: 'Calificación Media', value: `${avgGlobal} / 5.0 ⭐` }
-        ]
-      };
-    }
+    compute: ctx =>
+      ctx.restaurantes
+        .filter(r => inScope(ctx, r.idRestaurante))
+        .map(r => {
+          const rs = ctx.resenas.filter(x => x.Restaurante_idRestaurante === r.idRestaurante);
+          return {
+            restaurante: r.nombre,
+            categoriacocina: r.categoriaCocina,
+            prom_comida: round(avg(rs.map(x => x.puntuacionComida)), 2),
+            prom_servicio: round(avg(rs.map(x => x.puntuacionServicio)), 2),
+            calificacion_global: round(avg(rs.map(x => (x.puntuacionComida + x.puntuacionServicio) / 2)), 2),
+            total_opiniones: rs.length,
+          };
+        })
+        .filter(r => r.total_opiniones >= 1)
+        .sort((a, b) => b.calificacion_global - a.calificacion_global || cmp(a.restaurante, b.restaurante)),
+    summarize: rows => [
+      { label: 'Reseñas', value: sum(rows.map(r => r.total_opiniones)) },
+      { label: 'Mejor calificada', value: rows[0]?.restaurante || '-' },
+      { label: 'Nota más baja', value: rows.at(-1)?.calificacion_global ?? '-' },
+    ],
   },
-
   {
     id: 7,
     category: 'Intermedio',
-    title: 'Consumo y Gasto Turístico Promedio por País de Origen',
-    subtitle: 'Consulta multitabla (Cliente, Pais, Orden) con GROUP BY y filtro HAVING',
-    businessGoal: 'Identificar el perfil de gasto según el país emisor para diseñar paquetes turísticos dirigidos y optimizar menús multilingües.',
-    managementContext: 'Determinación del ticket promedio de turistas norteamericanos y europeos versus consumo doméstico.',
-    sqlQuery: `-- REPORTE INTERMEDIO 4: Multitabla con JOIN, GROUP BY y HAVING
-SELECT 
-    p.nombre AS pais,
-    COUNT(DISTINCT c.numeroDocumento) AS total_turistas,
-    COUNT(o.idOrden) AS total_pedidos,
-    ROUND(AVG(o.total), 2) AS ticket_promedio,
-    SUM(o.total) AS gasto_acumulado
-FROM Cliente c
-JOIN Pais p ON c.paisOrigen = p.idPais
-JOIN Orden o ON c.numeroDocumento = o.Cliente_numeroDocumento
-GROUP BY p.nombre
-HAVING SUM(o.total) >= 50000
-ORDER BY gasto_acumulado DESC;`,
+    title: 'Gasto Turístico por País de Origen',
+    subtitle: 'Cliente ⋈ Pais ⋈ Orden · WHERE · GROUP BY · HAVING',
+    businessGoal: 'Conocer el perfil de gasto según el país emisor para diseñar paquetes turísticos dirigidos.',
+    managementContext: 'Ticket promedio de turistas extranjeros frente al consumo nacional.',
+    sqlTechniques: ['JOIN', 'WHERE', 'GROUP BY', 'COUNT DISTINCT', 'AVG', 'HAVING'],
+    scoped: false,
+    sqlQuery: sql(7),
     hasChart: false,
     columns: [
-      { key: 'pais', header: 'País de Procedencia' },
-      { key: 'total_turistas', header: 'Turistas Registrados', align: 'center' },
-      { key: 'total_pedidos', header: 'Órdenes Realizadas', align: 'center' },
-      { key: 'ticket_promedio', header: 'Gasto Promedio por Orden', isCurrency: true, align: 'right' },
-      { key: 'gasto_acumulado', header: 'Gasto Total Acumulado', isCurrency: true, align: 'right' }
+      { key: 'pais', header: 'País' },
+      { key: 'total_turistas', header: 'Clientes', align: 'center' },
+      { key: 'total_pedidos', header: 'Órdenes', align: 'center' },
+      { key: 'ticket_promedio', header: 'Ticket promedio', isCurrency: true, align: 'right' },
+      { key: 'gasto_acumulado', header: 'Gasto total', isCurrency: true, align: 'right' },
     ],
-    execute: ({ clientes, paises, ordenes }) => {
-      const paisMap: Record<string, { total_turistas: Set<string>; pedidos: number; totalGasto: number }> = {};
-
-      ordenes.forEach(o => {
-        const cliente = clientes.find(c => c.numeroDocumento === o.Cliente_numeroDocumento);
-        if (!cliente) return;
-        const paisObj = paises.find(p => p.idPais === cliente.paisOrigen);
-        const paisNombre = paisObj?.nombre || cliente.paisOrigen;
-
-        if (!paisMap[paisNombre]) {
-          paisMap[paisNombre] = { total_turistas: new Set(), pedidos: 0, totalGasto: 0 };
-        }
-        paisMap[paisNombre].total_turistas.add(cliente.numeroDocumento);
-        paisMap[paisNombre].pedidos++;
-        paisMap[paisNombre].totalGasto += o.total;
-      });
-
-      const data = Object.entries(paisMap)
-        .map(([pais, v]) => ({
-          pais,
-          total_turistas: v.total_turistas.size,
-          total_pedidos: v.pedidos,
-          ticket_promedio: Math.round(v.totalGasto / v.pedidos),
-          gasto_acumulado: v.totalGasto
+    compute: ctx => {
+      const pais = new Map(ctx.paises.map(p => [p.idPais, p.nombre]));
+      const cli = new Map(ctx.clientes.map(c => [c.numeroDocumento, c]));
+      const filas = activas(ctx)
+        .map(o => ({ o, c: cli.get(o.Cliente_numeroDocumento) }))
+        .filter(x => x.c && pais.has(x.c.paisOrigen));
+      return [...groupBy(filas, x => pais.get(x.c!.paisOrigen)!).entries()]
+        .map(([p, xs]) => ({
+          pais: p,
+          total_turistas: new Set(xs.map(x => x.c!.numeroDocumento)).size,
+          total_pedidos: xs.length,
+          ticket_promedio: round(avg(xs.map(x => x.o.total))),
+          gasto_acumulado: sum(xs.map(x => x.o.total)),
         }))
-        .filter(d => d.gasto_acumulado >= 50000)
-        .sort((a, b) => b.gasto_acumulado - a.gasto_acumulado);
-
-      return {
-        data,
-        activeRestauranteName: 'Perfil Geográfico del Gasto Turístico',
-        summary: [
-          { label: 'Mercados Emisores Clave', value: data.length },
-          { label: 'País Líder en Gasto', value: data[0]?.pais || 'N/A' }
-        ]
-      };
-    }
+        .filter(r => r.gasto_acumulado >= 50000)
+        .sort((a, b) => b.gasto_acumulado - a.gasto_acumulado || cmp(a.pais, b.pais));
+    },
+    summarize: rows => [
+      { label: 'Países con consumo', value: rows.length },
+      { label: 'Mayor gasto', value: rows[0]?.pais || '-' },
+      { label: 'Gasto total', value: money(sum(rows.map(r => r.gasto_acumulado))) },
+    ],
+  },
+  {
+    id: 12,
+    category: 'Intermedio',
+    title: 'Ventas Mes a Mes por Canal',
+    subtitle: 'Orden ⋈ Estado ⟕ OrdenDomicilio · CASE · GROUP BY TO_CHAR(fecha)',
+    businessGoal: 'Ver la tendencia mensual de ventas y el peso del domicilio frente al salón para planear personal y compras.',
+    managementContext: 'Estacionalidad turística: temporadas altas y bajas en los destinos.',
+    sqlTechniques: ['JOIN', 'LEFT JOIN', 'CASE', 'TO_CHAR', 'GROUP BY', 'AVG'],
+    scoped: false,
+    sqlQuery: sql(12),
+    hasChart: true,
+    chartType: 'area',
+    chartXKey: 'mes',
+    chartYKey: 'ventas_mes',
+    chartName: 'Ventas del mes ($ COP)',
+    columns: [
+      { key: 'mes', header: 'Mes', align: 'center' },
+      { key: 'total_ordenes', header: 'Órdenes', align: 'center' },
+      { key: 'ordenes_salon', header: 'Salón', align: 'center' },
+      { key: 'ordenes_domicilio', header: 'Domicilio', align: 'center' },
+      { key: 'ticket_promedio', header: 'Ticket promedio', isCurrency: true, align: 'right' },
+      { key: 'ventas_mes', header: 'Ventas', isCurrency: true, align: 'right' },
+    ],
+    compute: ctx =>
+      [...groupBy(activas(ctx), o => o.fecha.slice(0, 7)).entries()]
+        .map(([mes, os]) => ({
+          mes,
+          total_ordenes: os.length,
+          ordenes_salon: os.filter(o => o.tipo !== 'Domicilio').length,
+          ordenes_domicilio: os.filter(o => o.tipo === 'Domicilio').length,
+          ticket_promedio: round(avg(os.map(o => o.total))),
+          ventas_mes: sum(os.map(o => o.total)),
+        }))
+        .sort((a, b) => String(a.mes).localeCompare(String(b.mes))),
+    summarize: rows => {
+      const best = [...rows].sort((a, b) => b.ventas_mes - a.ventas_mes)[0];
+      const dom = sum(rows.map(r => r.ordenes_domicilio));
+      const tot = sum(rows.map(r => r.total_ordenes));
+      return [
+        { label: 'Ventas del periodo', value: money(sum(rows.map(r => r.ventas_mes))) },
+        { label: 'Mejor mes', value: best?.mes || '-' },
+        { label: 'Participación domicilio', value: `${tot ? Math.round((dom / tot) * 100) : 0}%` },
+      ];
+    },
   },
 
-  // ==========================================
-  // 3. REPORTES AVANZADOS (Consultas con Subconsultas)
-  // ==========================================
+  // ============================================================ AVANZADOS
   {
     id: 8,
     category: 'Avanzado',
-    title: 'Sedes con Facturación Superior al Promedio General de la Plataforma',
-    subtitle: 'Consulta avanzada con Subconsulta Escalar en la cláusula HAVING (AVG sobre Orden)',
-    businessGoal: 'Identificar a las unidades gastronómicas de alto desempeño comercial que superan la media del mercado para programas de incentivos y expansión.',
-    managementContext: 'Benchmarking gerencial: sedes estrella que subsidian operativamente la red turística.',
-    sqlQuery: `-- REPORTE AVANZADO 1: Consulta con Subconsulta Escalar en HAVING
-SELECT 
-    r.idRestaurante,
-    r.nombre AS restaurante,
-    r.categoriaCocina,
-    c.nombre AS ciudad,
-    SUM(o.total) AS ventas_totales
-FROM Restaurante r
-JOIN Ciudad c ON r.Ciudad_idCiudad = c.idCiudad
-JOIN Mesa m ON r.idRestaurante = m.Restaurante_idRestaurante
-JOIN OrdenRestaurante ore ON m.idMesa = ore.Mesa_idMesa
-JOIN Orden o ON ore.Orden_idOrden = o.idOrden
-GROUP BY r.idRestaurante, r.nombre, r.categoriaCocina, c.nombre
-HAVING SUM(o.total) > (
-    -- Subconsulta escalar que calcula el promedio de ventas por orden en toda la plataforma
-    SELECT AVG(total) FROM Orden
-)
-ORDER BY ventas_totales DESC;`,
+    title: 'Sedes con Ventas sobre el Promedio por Sede',
+    subtitle: 'Subconsulta escalar con agregado anidado AVG(SUM()) en SELECT y HAVING',
+    businessGoal: 'Identificar las sedes de alto desempeño que superan la media de la red para incentivos y expansión.',
+    managementContext: 'Benchmarking: sedes estrella frente al promedio de ventas en salón por sede.',
+    sqlTechniques: ['Subconsulta escalar', 'AVG(SUM()) anidado', 'HAVING con subconsulta', 'JOIN'],
+    scoped: false,
+    sqlQuery: sql(8),
     hasChart: false,
     columns: [
-      { key: 'idRestaurante', header: 'ID', align: 'center' },
-      { key: 'restaurante', header: 'Restaurante Excedente' },
+      { key: 'restaurante', header: 'Restaurante' },
       { key: 'ciudad', header: 'Ciudad' },
-      { key: 'categoriaCocina', header: 'Especialidad' },
-      { key: 'ventas_totales', header: 'Ventas Totales', isCurrency: true, align: 'right' },
-      { key: 'superavit', header: 'Superávit vs Media', isCurrency: true, align: 'right' }
+      { key: 'categoriacocina', header: 'Especialidad' },
+      { key: 'total_pedidos', header: 'Órdenes', align: 'center' },
+      { key: 'ventas_totales', header: 'Ventas', isCurrency: true, align: 'right' },
+      { key: 'promedio_por_sede', header: 'Promedio por sede', isCurrency: true, align: 'right' },
     ],
-    execute: ({ restaurantes, ordenes, ciudades }) => {
-      const avgOrden = ordenes.length > 0 ? ordenes.reduce((s, o) => s + o.total, 0) / ordenes.length : 0;
-
-      const data = restaurantes.map(r => {
-        const ciudad = ciudades.find(c => c.idCiudad === r.Ciudad_idCiudad)?.nombre || r.Ciudad_idCiudad;
-        let ventas = 0;
-        ordenes.forEach(o => {
-          const isLinked = (r.idRestaurante === 1 && [1, 2, 7].includes(o.idOrden)) ||
-                           (r.idRestaurante === 2 && [2, 8].includes(o.idOrden)) ||
-                           (r.idRestaurante === 3 && [3, 9].includes(o.idOrden)) ||
-                           (r.idRestaurante === 4 && [4, 10].includes(o.idOrden)) ||
-                           (r.idRestaurante === 5 && [5, 11].includes(o.idOrden)) ||
-                           (r.idRestaurante === 6 && [6, 12].includes(o.idOrden));
-          if (isLinked) ventas += o.total;
-        });
-
-        return {
-          idRestaurante: r.idRestaurante,
-          restaurante: r.nombre,
-          ciudad,
-          categoriaCocina: r.categoriaCocina,
-          ventas_totales: ventas,
-          superavit: ventas - Math.round(avgOrden)
-        };
-      }).filter(d => d.ventas_totales > avgOrden).sort((a, b) => b.ventas_totales - a.ventas_totales);
-
-      return {
-        data,
-        activeRestauranteName: 'Auditoría de Rendimiento Superior a la Media',
-        summary: [
-          { label: 'Ticket Promedio Nacional', value: `$${Math.round(avgOrden).toLocaleString('es-CO')} COP` },
-          { label: 'Sedes Superávit', value: data.length }
-        ]
-      };
-    }
+    compute: ctx => {
+      const ventas = ventasSalonPorSede(ctx);
+      const totales = [...ventas.values()].map(os => sum(os.map(o => o.total)));
+      const media = avg(totales);
+      return [...ventas.entries()]
+        .map(([rid, os]) => {
+          const r = ctx.restaurantes.find(x => x.idRestaurante === rid)!;
+          return {
+            idrestaurante: rid,
+            restaurante: r?.nombre,
+            categoriacocina: r?.categoriaCocina,
+            ciudad: ctx.ciudades.find(c => c.idCiudad === r?.Ciudad_idCiudad)?.nombre,
+            total_pedidos: os.length,
+            ventas_totales: sum(os.map(o => o.total)),
+            promedio_por_sede: round(media),
+          };
+        })
+        .filter(r => r.ventas_totales > media)
+        .sort((a, b) => b.ventas_totales - a.ventas_totales || Number(a.idrestaurante) - Number(b.idrestaurante));
+    },
+    summarize: rows => [
+      { label: 'Sedes sobre la media', value: rows.length },
+      { label: 'Promedio por sede', value: money(rows[0]?.promedio_por_sede || 0) },
+      { label: 'Superávit de la líder', value: money((rows[0]?.ventas_totales || 0) - (rows[0]?.promedio_por_sede || 0)) },
+    ],
   },
-
   {
     id: 9,
     category: 'Avanzado',
-    title: 'Clientes VIP con Consumo Total Superior al Promedio Global de Turistas',
-    subtitle: 'Consulta avanzada con Subconsulta Anidada en FROM/HAVING y Subconsulta Correlacionada',
-    businessGoal: 'Crear el club de comensales y turistas VIP para ofrecerles acceso preferencial a catas privadas, beneficios de lealtad y reservas exclusivas.',
-    managementContext: 'Diseño de membresías turísticas de alta gama para viajeros frecuentes en Colombia.',
-    sqlQuery: `-- REPORTE AVANZADO 2: Subconsulta en HAVING y Subconsulta Correlacionada
-SELECT 
-    c.numeroDocumento,
-    c.Nombre || ' ' || c.apellido AS cliente,
-    c.email,
-    c.paisOrigen,
-    SUM(o.total) AS total_gastado,
-    (
-        -- Subconsulta correlacionada: cuenta las experiencias contratadas por este cliente
-        SELECT NVL(SUM(deo.asistentes), 0)
-        FROM DetalleExperienciaOrden deo
-        JOIN Orden o2 ON deo.Orden_idOrden = o2.idOrden
-        WHERE o2.Cliente_numeroDocumento = c.numeroDocumento
-    ) AS cupos_experiencias
-FROM Cliente c
-JOIN Orden o ON c.numeroDocumento = o.Cliente_numeroDocumento
-GROUP BY c.numeroDocumento, c.Nombre, c.apellido, c.email, c.paisOrigen
-HAVING SUM(o.total) > (
-    -- Subconsulta anidada: promedio de gasto acumulado por cliente en la plataforma
-    SELECT AVG(gasto_cliente)
-    FROM (
-        SELECT SUM(total) AS gasto_cliente
-        FROM Orden
-        GROUP BY Cliente_numeroDocumento
-    )
-)
-ORDER BY total_gastado DESC;`,
+    title: 'Clientes VIP: Gasto sobre el Promedio por Cliente',
+    subtitle: 'Subconsulta correlacionada en SELECT + subconsulta en FROM dentro de HAVING',
+    businessGoal: 'Conformar el club de clientes VIP para catas privadas, beneficios de fidelización y reservas preferenciales.',
+    managementContext: 'Membresías de alta gama para viajeros frecuentes (programa de fidelización).',
+    sqlTechniques: ['Subconsulta correlacionada', 'Vista en línea (FROM)', 'HAVING con subconsulta', 'NVL'],
+    scoped: false,
+    sqlQuery: sql(9),
     hasChart: false,
     columns: [
-      { key: 'numeroDocumento', header: 'Documento' },
-      { key: 'cliente', header: 'Turista VIP' },
-      { key: 'paisOrigen', header: 'País', align: 'center' },
+      { key: 'numerodocumento', header: 'Documento' },
+      { key: 'cliente', header: 'Cliente VIP' },
+      { key: 'paisorigen', header: 'País', align: 'center' },
       { key: 'email', header: 'Correo' },
-      { key: 'cupos_experiencias', header: 'Cupos en Tours', align: 'center' },
-      { key: 'total_gastado', header: 'Gasto Acumulado', isCurrency: true, align: 'right' }
+      { key: 'total_ordenes', header: 'Órdenes', align: 'center' },
+      { key: 'cupos_experiencias', header: 'Cupos en tours', align: 'center' },
+      { key: 'total_gastado', header: 'Gasto acumulado', isCurrency: true, align: 'right' },
     ],
-    execute: ({ clientes, ordenes }) => {
-      const gastoMap: Record<string, number> = {};
-      ordenes.forEach(o => {
-        gastoMap[o.Cliente_numeroDocumento] = (gastoMap[o.Cliente_numeroDocumento] || 0) + o.total;
-      });
-
-      const gastosArray = Object.values(gastoMap);
-      const promedioGlobal = gastosArray.length > 0 ? gastosArray.reduce((s, g) => s + g, 0) / gastosArray.length : 0;
-
-      const data = clientes.map(c => {
-        const totalGastado = gastoMap[c.numeroDocumento] || 0;
-        let cupos = 0;
-        ordenes.filter(o => o.Cliente_numeroDocumento === c.numeroDocumento).forEach(o => {
-          o.detallesExperiencia?.forEach(de => {
-            cupos += de.asistentes;
-          });
-        });
-
-        return {
-          numeroDocumento: c.numeroDocumento,
-          cliente: `${c.Nombre} ${c.apellido}`,
-          paisOrigen: c.paisOrigen,
-          email: c.email,
-          cupos_experiencias: cupos,
-          total_gastado: totalGastado
-        };
-      }).filter(d => d.total_gastado > promedioGlobal).sort((a, b) => b.total_gastado - a.total_gastado);
-
-      return {
-        data,
-        activeRestauranteName: 'Segmento Turístico VIP',
-        summary: [
-          { label: 'Gasto Medio Global', value: `$${Math.round(promedioGlobal).toLocaleString('es-CO')} COP` },
-          { label: 'Turistas Calificados VIP', value: data.length }
-        ]
-      };
-    }
+    compute: ctx => {
+      const porCliente = groupBy(activas(ctx), o => o.Cliente_numeroDocumento);
+      const media = avg([...porCliente.values()].map(os => sum(os.map(o => o.total))));
+      return [...porCliente.entries()]
+        .map(([doc, os]) => {
+          const c = ctx.clientes.find(x => x.numeroDocumento === doc);
+          return {
+            numerodocumento: doc,
+            cliente: c ? `${c.Nombre} ${c.apellido}` : doc,
+            email: c?.email,
+            paisorigen: c?.paisOrigen,
+            total_ordenes: os.length,
+            total_gastado: sum(os.map(o => o.total)),
+            // la subconsulta correlacionada recorre TODAS las órdenes del cliente
+            cupos_experiencias: sum(
+              ctx.ordenes
+                .filter(o => o.Cliente_numeroDocumento === doc)
+                .flatMap(o => o.detallesExperiencia || [])
+                .map(d => d.asistentes)
+            ),
+          };
+        })
+        .filter(r => r.total_gastado > media)
+        .sort((a, b) => b.total_gastado - a.total_gastado || cmp(a.numerodocumento, b.numerodocumento));
+    },
+    summarize: (rows, ctx) => {
+      const media = avg([...groupBy(activas(ctx), o => o.Cliente_numeroDocumento).values()].map(os => sum(os.map(o => o.total))));
+      return [
+        { label: 'Clientes VIP', value: rows.length },
+        { label: 'Umbral (promedio)', value: money(media) },
+        { label: 'Gasto VIP total', value: money(sum(rows.map(r => r.total_gastado))) },
+      ];
+    },
   },
-
   {
     id: 10,
     category: 'Avanzado',
-    title: 'Platos del Menú con Precio Superior al Promedio de su Propia Categoría',
-    subtitle: 'Consulta avanzada con Subconsulta Correlacionada en WHERE (Menú vs Categoría)',
-    businessGoal: 'Detectar platos "Signature" o Premium con márgenes destacados dentro de cada categoría para auditoría de costos de insumos e ingeniería de menús.',
-    managementContext: 'Ingeniería de menú: balanceo entre platos de alta rentabilidad vs platos tradicionales.',
-    sqlQuery: `-- REPORTE AVANZADO 3: Subconsulta Correlacionada en la cláusula WHERE
-SELECT 
-    im.idItem,
-    im.nombrItem AS plato_bebida,
-    im.precio,
-    cm.nombrecategoria AS categoria,
-    r.nombre AS restaurante,
-    -- Subconsulta correlacionada en SELECT: Promedio de la misma categoría
-    ROUND((
-        SELECT AVG(sub.precio)
-        FROM ItemMenu sub
-        WHERE sub.CategoriaMenu_idCategoria = im.CategoriaMenu_idCategoria
-    ), 2) AS precio_promedio_categoria,
-    -- Diferencial de precio
-    im.precio - ROUND((
-        SELECT AVG(sub2.precio)
-        FROM ItemMenu sub2
-        WHERE sub2.CategoriaMenu_idCategoria = im.CategoriaMenu_idCategoria
-    ), 2) AS sobreprecio_premium
-FROM ItemMenu im
-JOIN CartaMenu cm ON im.CategoriaMenu_idCategoria = cm.idCategoria
-JOIN Restaurante r ON cm.Restaurante_idRestaurante = r.idRestaurante
-WHERE im.precio > (
-    -- Subconsulta correlacionada en WHERE: Filtra solo aquellos mayores al promedio de su categoría
-    SELECT AVG(im_sub.precio)
-    FROM ItemMenu im_sub
-    WHERE im_sub.CategoriaMenu_idCategoria = im.CategoriaMenu_idCategoria
-)
-AND (:idRestaurante IS NULL OR r.idRestaurante = :idRestaurante)
-ORDER BY sobreprecio_premium DESC;`,
+    title: 'Platos con Precio sobre el Promedio de su Categoría',
+    subtitle: 'Subconsultas correlacionadas en WHERE y en SELECT',
+    businessGoal: 'Detectar platos premium dentro de cada categoría de la carta para ingeniería de menú y costos.',
+    managementContext: 'Balance entre platos de alta rentabilidad y platos tradicionales.',
+    sqlTechniques: ['Subconsulta correlacionada en WHERE', 'Subconsulta correlacionada en SELECT', 'JOIN'],
+    scoped: true,
+    sqlQuery: sql(10),
     hasChart: false,
     columns: [
-      { key: 'plato_bebida', header: 'Plato / Especialidad' },
-      { key: 'categoria', header: 'Categoría Carta' },
+      { key: 'plato_bebida', header: 'Plato / bebida' },
+      { key: 'categoria', header: 'Categoría' },
       { key: 'restaurante', header: 'Restaurante' },
-      { key: 'precio', header: 'Precio Plato', isCurrency: true, align: 'right' },
-      { key: 'precio_promedio_categoria', header: 'Promedio Categoría', isCurrency: true, align: 'right' },
-      { key: 'sobreprecio_premium', header: 'Diferencial Premium (+)', isCurrency: true, align: 'right' }
+      { key: 'precio', header: 'Precio', isCurrency: true, align: 'right' },
+      { key: 'precio_promedio_categoria', header: 'Promedio categoría', isCurrency: true, align: 'right' },
+      { key: 'sobreprecio_premium', header: 'Diferencial', isCurrency: true, align: 'right' },
     ],
-    execute: ({ itemsMenu, cartasMenu, restaurantes, filterRestauranteId }) => {
-      const activeRest = filterRestauranteId ? restaurantes.find(r => r.idRestaurante === filterRestauranteId) : null;
-
-      const catAvg: Record<number, number> = {};
-      const catCount: Record<number, number> = {};
-
-      itemsMenu.forEach(item => {
-        catAvg[item.CategoriaMenu_idCategoria] = (catAvg[item.CategoriaMenu_idCategoria] || 0) + item.precio;
-        catCount[item.CategoriaMenu_idCategoria] = (catCount[item.CategoriaMenu_idCategoria] || 0) + 1;
-      });
-
-      Object.keys(catAvg).forEach(catId => {
-        const id = Number(catId);
-        catAvg[id] = Math.round(catAvg[id] / catCount[id]);
-      });
-
-      const filtered = itemsMenu.filter(item => {
-        const carta = cartasMenu.find(c => c.idCategoria === item.CategoriaMenu_idCategoria);
-        if (filterRestauranteId && carta?.Restaurante_idRestaurante !== filterRestauranteId) {
-          return false;
-        }
-        return item.precio > (catAvg[item.CategoriaMenu_idCategoria] || 0);
-      });
-
-      const data = filtered.map(item => {
-        const carta = cartasMenu.find(c => c.idCategoria === item.CategoriaMenu_idCategoria);
-        const rest = restaurantes.find(r => r.idRestaurante === carta?.Restaurante_idRestaurante);
-        const avgCat = catAvg[item.CategoriaMenu_idCategoria] || 0;
-
-        return {
-          idItem: item.idItem,
-          plato_bebida: item.nombrItem,
-          categoria: carta?.nombrecategoria || 'General',
-          restaurante: rest?.nombre || 'Sede',
-          precio: item.precio,
-          precio_promedio_categoria: avgCat,
-          sobreprecio_premium: item.precio - avgCat
-        };
-      }).sort((a, b) => b.sobreprecio_premium - a.sobreprecio_premium);
-
-      return {
-        data,
-        activeRestauranteName: activeRest ? activeRest.nombre : 'Análisis Culinario Multisede',
-        summary: [
-          { label: 'Platos Premium Detectados', value: data.length },
-          { label: 'Mayor Margen Unitario', value: `+$${data[0]?.sobreprecio_premium.toLocaleString('es-CO') || 0} COP` }
-        ]
-      };
-    }
+    compute: ctx => {
+      const promCat = (cat: number) => avg(ctx.itemsMenu.filter(i => i.CategoriaMenu_idCategoria === cat).map(i => i.precio));
+      return ctx.itemsMenu
+        .map(i => {
+          const cm = ctx.cartasMenu.find(c => c.idCategoria === i.CategoriaMenu_idCategoria);
+          const r = ctx.restaurantes.find(x => x.idRestaurante === cm?.Restaurante_idRestaurante);
+          const prom = round(promCat(i.CategoriaMenu_idCategoria));
+          return {
+            iditem: i.idItem,
+            plato_bebida: i.nombrItem,
+            precio: i.precio,
+            categoria: cm?.nombrecategoria,
+            restaurante: r?.nombre,
+            rid: r?.idRestaurante,
+            precio_promedio_categoria: prom,
+            sobreprecio_premium: i.precio - prom,
+            _gt: i.precio > promCat(i.CategoriaMenu_idCategoria),
+          };
+        })
+        .filter(r => r._gt && inScope(ctx, r.rid))
+        .map(({ _gt, rid, ...r }) => r)
+        .sort((a, b) => b.sobreprecio_premium - a.sobreprecio_premium || a.iditem - b.iditem);
+    },
+    summarize: rows => [
+      { label: 'Platos premium', value: rows.length },
+      { label: 'Mayor diferencial', value: money(rows[0]?.sobreprecio_premium || 0) },
+      { label: 'Plato estrella', value: rows[0]?.plato_bebida || '-' },
+    ],
   },
-
-  // ==========================================
-  // 4. NUEVO REPORTE COMPLEJO ADICIONAL (Solicitado por el usuario)
-  // ==========================================
   {
     id: 11,
     category: 'Avanzado',
-    title: 'Personal de Salón con Alto Rendimiento y Dominio de Múltiples Idiomas',
-    subtitle: 'Consulta de alta complejidad con Subconsultas Múltiples, Correlacionadas y Filtro Agregado',
-    businessGoal: 'Identificar a los meseros que atienden a comensales con facturación superior al promedio de su restaurante y que dominan dos o más idiomas extranjeros para asignarles mesas de turismo internacional y bonos de bilingüismo.',
-    managementContext: 'Asignación estratégica de personal políglota a comensales de alto valor en temporada de turismo extranjero.',
-    sqlQuery: `-- REPORTE AVANZADO 4: Subconsultas Múltiples en SELECT y HAVING Correlacionado
-SELECT 
-    p.numeroDocumento,
-    p.Nombre || ' ' || p.apellido AS mesero,
-    r.nombre AS restaurante_sede,
-    m.turno,
-    (
-        -- Subconsulta 1: Cuenta el número de idiomas extranjeros que domina el mesero
-        SELECT COUNT(*) 
-        FROM MeseroIdioma mi 
-        WHERE mi.Mesero_Personal_numeroDocumento = p.numeroDocumento
-    ) AS idiomas_hablados,
-    COUNT(ore.Orden_idOrden) AS ordenes_atendidas,
-    SUM(o.total) AS total_recaudado
-FROM Personal p
-JOIN Mesero m ON p.numeroDocumento = m.Personal_numeroDocumento
-JOIN Restaurante r ON p.Restaurante_idRestaurante = r.idRestaurante
-JOIN OrdenRestaurante ore ON m.Personal_numeroDocumento = ore.Mesero_Personal_numeroDocumento
-JOIN Orden o ON ore.Orden_idOrden = o.idOrden
-WHERE (:idRestaurante IS NULL OR p.Restaurante_idRestaurante = :idRestaurante)
-GROUP BY p.numeroDocumento, p.Nombre, p.apellido, r.nombre, m.turno, p.Restaurante_idRestaurante
-HAVING SUM(o.total) > (
-    -- Subconsulta 2 Correlacionada: Compara contra la media de facturación por mesero en su propio restaurante
-    SELECT AVG(ventas_mesero)
-    FROM (
-        SELECT SUM(o2.total) AS ventas_mesero
-        FROM Personal p2
-        JOIN Mesero m2 ON p2.numeroDocumento = m2.Personal_numeroDocumento
-        JOIN OrdenRestaurante ore2 ON m2.Personal_numeroDocumento = ore2.Mesero_Personal_numeroDocumento
-        JOIN Orden o2 ON ore2.Orden_idOrden = o2.idOrden
-        WHERE p2.Restaurante_idRestaurante = p.Restaurante_idRestaurante
-        GROUP BY p2.numeroDocumento
-    )
-)
-AND (
-    -- Subconsulta 3: Exige dominio de al menos 2 idiomas (ej. Inglés y Francés/Alemán)
-    SELECT COUNT(*) 
-    FROM MeseroIdioma mi_sub 
-    WHERE mi_sub.Mesero_Personal_numeroDocumento = p.numeroDocumento
-) >= 2
-ORDER BY total_recaudado DESC;`,
+    title: 'Meseros Bilingües con Ventas sobre el Promedio de su Sede',
+    subtitle: 'Subconsulta en SELECT + dos subconsultas correlacionadas en HAVING',
+    businessGoal: 'Asignar mesas de turismo internacional y bonos de bilingüismo a los meseros políglotas de mayor recaudo.',
+    managementContext: 'Personal que habla 2 o más idiomas y vende igual o más que el promedio de su propia sede.',
+    sqlTechniques: ['Subconsulta en SELECT', 'HAVING correlacionado', 'AVG(SUM()) anidado', 'COUNT(*)'],
+    scoped: true,
+    sqlQuery: sql(11),
     hasChart: false,
     columns: [
-      { key: 'numeroDocumento', header: 'Documento' },
-      { key: 'mesero', header: 'Colaborador (Mesero)' },
+      { key: 'mesero', header: 'Mesero' },
       { key: 'restaurante_sede', header: 'Sede' },
       { key: 'turno', header: 'Turno' },
-      { key: 'idiomas_hablados', header: 'Idiomas Dominados', align: 'center' },
-      { key: 'ordenes_atendidas', header: 'Órdenes Atendidas', align: 'center' },
-      { key: 'total_recaudado', header: 'Recaudación Generada', isCurrency: true, align: 'right' }
+      { key: 'idiomas_hablados', header: 'Idiomas', align: 'center' },
+      { key: 'ordenes_atendidas', header: 'Órdenes', align: 'center' },
+      { key: 'total_recaudado', header: 'Recaudo', isCurrency: true, align: 'right' },
     ],
-    execute: ({ personal, restaurantes, filterRestauranteId }) => {
-      const activeRest = filterRestauranteId ? restaurantes.find(r => r.idRestaurante === filterRestauranteId) : null;
-
-      // Mocked realistic rows matching SQL output for Oracle DB
-      const allRows = [
-        {
-          numeroDocumento: '75080003',
-          mesero: 'Sebastián Gutiérrez',
-          restauranteId: 1,
-          restaurante_sede: 'El Fogón Cafetero (Salento)',
-          turno: 'Tarde / Noche',
-          idiomas_hablados: 3, // Español, Inglés, Francés
-          ordenes_atendidas: 7,
-          total_recaudado: 524000
-        },
-        {
-          numeroDocumento: '75080011',
-          mesero: 'Andrés Camilo Peña',
-          restauranteId: 2,
-          restaurante_sede: 'Mar y Murallas (Cartagena)',
-          turno: 'Noche',
-          idiomas_hablados: 4, // Español, Inglés, Francés, Portugués
-          ordenes_atendidas: 9,
-          total_recaudado: 782000
-        },
-        {
-          numeroDocumento: '75080018',
-          mesero: 'Juliana Restrepo',
-          restauranteId: 4,
-          restaurante_sede: 'La Cosecha Andina (Bogotá)',
-          turno: 'Tarde / Noche',
-          idiomas_hablados: 2, // Español, Inglés
-          ordenes_atendidas: 6,
-          total_recaudado: 490000
-        }
-      ];
-
-      const data = filterRestauranteId ? allRows.filter(r => r.restauranteId === filterRestauranteId) : allRows;
-
-      return {
-        data,
-        activeRestauranteName: activeRest ? activeRest.nombre : 'Evaluación Integral de Talento Bilingüe',
-        summary: [
-          { label: 'Meseros Calificados', value: data.length },
-          { label: 'Promedio Idiomas', value: '3.0 idiomas' },
-          { label: 'Recaudación Acumulada', value: `$${data.reduce((s, d) => s + d.total_recaudado, 0).toLocaleString('es-CO')} COP` }
-        ]
-      };
-    }
-  }
+    compute: ctx => {
+      const porMesero = groupBy(salon(activas(ctx)).filter(o => o.meseroId), o => o.meseroId!) as Map<string, Orden[]>;
+      const idiomas = (doc: string) => ctx.meseroIdiomas.filter(m => m.Mesero_Personal_numeroDocumento === doc).length;
+      const filas = [...porMesero.entries()].map(([doc, os]) => {
+        const p = ctx.personal.find(x => x.numeroDocumento === doc)!;
+        return { p, doc, os, total: sum(os.map(o => o.total)) };
+      });
+      const mediaSede = (rid: number) => avg(filas.filter(f => f.p?.Restaurante_idRestaurante === rid).map(f => f.total));
+      return filas
+        .filter(f => f.p && inScope(ctx, f.p.Restaurante_idRestaurante))
+        .filter(f => f.total >= mediaSede(f.p.Restaurante_idRestaurante) && idiomas(f.doc) >= 2)
+        .map(f => ({
+          numerodocumento: f.doc,
+          mesero: `${f.p.Nombre} ${f.p.apellido}`,
+          restaurante_sede: ctx.restaurantes.find(r => r.idRestaurante === f.p.Restaurante_idRestaurante)?.nombre,
+          turno: ctx.meseros.find(m => m.Personal_numeroDocumento === f.doc)?.turno,
+          idiomas_hablados: idiomas(f.doc),
+          ordenes_atendidas: f.os.length,
+          total_recaudado: f.total,
+        }))
+        .sort((a, b) => b.total_recaudado - a.total_recaudado || cmp(a.numerodocumento, b.numerodocumento));
+    },
+    summarize: rows => [
+      { label: 'Meseros destacados', value: rows.length },
+      { label: 'Máx. idiomas', value: Math.max(0, ...rows.map(r => r.idiomas_hablados)) },
+      { label: 'Recaudo del grupo', value: money(sum(rows.map(r => r.total_recaudado))) },
+    ],
+  },
 ];
+
+export const REPORT_ORDER = [1, 2, 3, 4, 5, 6, 7, 12, 8, 9, 10, 11];

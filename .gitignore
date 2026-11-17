@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.env
+.env.local
+*.log
+# Wallet de Oracle (credenciales): nunca versionar
+wallet*/
+*.p12
+*.sso
+*.jks
+.idea/
